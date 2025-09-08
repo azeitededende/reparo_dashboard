@@ -18,7 +18,7 @@ st.set_page_config(
 
 BASE_CSS = """
 <style>
-/* -------- resets leves -------- */
+/* -------- resets -------- */
 div[data-testid="stStatusWidget"], div[data-testid="stDecoration"] { visibility: hidden; height:0; }
 footer, #MainMenu { visibility: hidden; }
 .block-container { padding-top: .6rem; }
@@ -30,7 +30,7 @@ h2 { font-size: 1.45rem; letter-spacing:.2px; }
 h3 { font-size: 1.18rem; letter-spacing:.2px; }
 .small-muted { font-size: .95rem; opacity: .85; }
 
-/* -------- paleta default (modo claro) -------- */
+/* -------- paleta default (claro) -------- */
 :root{
   --app-bg: #ffffff;
   --text:   #111827;
@@ -50,17 +50,16 @@ h3 { font-size: 1.18rem; letter-spacing:.2px; }
   --danger-bg:#ffeceb; --danger-bd:#ffcdc6;
 }
 
-/* -------- overrides para modo escuro do sistema -------- */
+/* -------- dark mode seguindo SO -------- */
 @media (prefers-color-scheme: dark){
   :root{
-    --app-bg:#000000;       /* fundo preto */
-    --text:  #f8fafc;       /* texto branco */
+    --app-bg:#000000;
+    --text:  #f8fafc;
     --muted: #cbd5e1;
-    --card-bg:#0b0b0b;      /* quase preto p/ card */
+    --card-bg:#0b0b0b;
     --card-fg:#f8fafc;
     --border:#232323;
 
-    /* badges ajustadas p/ dark */
     --badge-fg: #f8fafc;
     --badge-gray-bg:#1f2937; --badge-gray-bd:#374151;
     --badge-blue-bg:#0b254a; --badge-blue-bd:#1e3a8a;
@@ -71,7 +70,6 @@ h3 { font-size: 1.18rem; letter-spacing:.2px; }
     --warn-bg:#2a1f07;  --warn-bd:#a16207;
     --danger-bg:#2a0f10;--danger-bd:#b91c1c;
   }
-
   html, body, .stApp, [data-testid="stAppViewContainer"], .block-container{
     background: var(--app-bg) !important;
     color: var(--text) !important;
@@ -167,10 +165,36 @@ def limpar_status(valor: str) -> str:
     if has_po: return "P.O"
     return raw
 
+def normalizar_os(val) -> str | None:
+    """
+    Aceita variações de OS como:
+      2025/08/0053, 2025-8-53, ' 2025 / 08 / 53 '
+    e normaliza para 'YYYY/MM/NNNN'.
+    Retorna None se não for um formato de OS válido (ex.: '011845').
+    """
+    if pd.isna(val):
+        return None
+    s = str(val).strip()
+    m = re.match(r"^\s*(\d{4})\s*[/-]\s*(\d{1,2})\s*[/-]\s*(\d{3,5})\s*$", s)
+    if not m:
+        return None
+    ano = int(m.group(1))
+    mes = int(m.group(2))
+    seq = m.group(3)
+
+    if not (1 <= mes <= 12):
+        return None
+
+    try:
+        seq_int = int(seq)
+    except ValueError:
+        return None
+    return f"{ano:04d}/{mes:02d}/{seq_int:04d}"
+
 # ======================== LOAD ========================
 @st.cache_data(show_spinner=False)
 def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
-    """Lê xls/xlsx/xlsb, normaliza, trata datas, status e prazos."""
+    """Lê xls/xlsx/xlsb, normaliza colunas, datas, status e prazos."""
     engine = _choose_engine(path)
     try:
         df = pd.read_excel(path, sheet_name="Worksheet", engine=engine)
@@ -184,6 +208,7 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
         "Insumo","Enviar até","Retornar até",
         "Motivo","Condição","Qtdade"
     ]
+    # renomes comuns por encoding
     mapa_renome = {
         "Or?/OS":"Orç/OS","Orc/OS":"Orç/OS",
         "Enviar at?":"Enviar até","Retornar at?":"Retornar até",
@@ -191,7 +216,7 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
     }
     df = df.rename(columns=mapa_renome)
 
-    # aproximar nomes
+    # aproxima por nomes normalizados
     norm_cols = {c: _norm(c) for c in df.columns}
     alvo_norm = {a: _norm(a) for a in colunas_importantes}
     ren_extra = {}
@@ -233,6 +258,13 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
         df["Vence em 7 dias"] = False
         df["Sem data"] = True
 
+    # OS normalizada (mantém só OS válidas)
+    if "Orç/OS" in df.columns:
+        df["__OS_norm"] = df["Orç/OS"].map(normalizar_os)
+        df = df[df["__OS_norm"].notna()].copy()
+        df["Orç/OS"] = df["__OS_norm"]
+        df.drop(columns="__OS_norm", inplace=True)
+
     return df
 
 # ======================== RENDER DE CARDS ========================
@@ -240,13 +272,14 @@ def card_badge(texto: str, tone: str = "gray") -> str:
     tone_cls = {"gray":"badge-gray","blue":"badge-blue","amber":"badge-amber","red":"badge-red","green":"badge-green"}.get(tone,"badge-gray")
     return f'<span class="badge {tone_cls}">{texto}</span>'
 
-def render_cards(dfv: pd.DataFrame):
-    """Renderiza itens como cartões (grade 3 colunas) com fallback seguro."""
+def render_cards(dfv: pd.DataFrame, cols_por_linha: int = 3):
+    """Renderiza itens como cartões; fallback evita 'tela branca'."""
     if dfv.empty:
         st.info("Nenhum item encontrado com os filtros atuais.")
         return
+    cols_por_linha = max(2, min(int(cols_por_linha), 6))
     try:
-        cols = st.columns(3)
+        cols = st.columns(cols_por_linha)
         i = 0
         for _, row in dfv.iterrows():
             # estilo do card pelo prazo
@@ -256,25 +289,25 @@ def render_cards(dfv: pd.DataFrame):
 
             # campos principais
             titulo = str(row.get("Prefixo","")) or "—"
-            # DESCRIÇÃO DA PEÇA: prioriza 'Insumo'; se ausente, usa 'Item'
-            descricao = str(row.get("Insumo", "")) or str(row.get("Item", "")) or "—"
+            descricao = str(row.get("Insumo","")) or str(row.get("Item","")) or "—"
 
             status_txt = str(row.get("Status","—"))
             sit_txt    = str(row.get("Sit","")).strip()
+            os_txt     = str(row.get("Orç/OS","")).strip()
             qtd_val    = row.get("Qtdade","")
             qtd_txt    = "" if pd.isna(qtd_val) else (str(int(qtd_val)) if str(qtd_val).isdigit() else str(qtd_val))
-
-            # P/N (opcional no chip)
-            pn = str(row.get("P/N Compras","")).strip()
-            pn_badge = card_badge(f"P/N: {pn}", "gray") if pn else ""
+            pn         = str(row.get("P/N Compras","")).strip()
 
             dt_ret = row.get("Retornar até", pd.NaT)
             dias   = row.get("Dias para devolver", None)
 
             # badges
-            b_status = card_badge(status_txt, "blue" if "P.O" in status_txt else ("red" if status_txt.lower().startswith("n") else "gray"))
-            b_sit    = card_badge(f"Sit: {sit_txt}") if sit_txt else ""
-            b_qtd    = card_badge(f"Qtd: {qtd_txt}", "green") if qtd_txt not in ["", "0", "nan"] else ""
+            b_os    = card_badge(f"OS: {os_txt}", "gray") if os_txt else ""
+            b_status= card_badge(status_txt, "blue" if "P.O" in status_txt else ("red" if status_txt.lower().startswith("n") else "gray"))
+            b_sit   = card_badge(f"Sit: {sit_txt}") if sit_txt else ""
+            b_qtd   = card_badge(f"Qtd: {qtd_txt}", "green") if qtd_txt not in ["", "0", "nan"] else ""
+            b_pn    = card_badge(f"P/N: {pn}", "gray") if pn else ""
+
             if pd.notna(dt_ret):
                 when = dt_ret.strftime("%d/%m/%Y")
                 tone = "amber" if (isinstance(dias,(int,float,np.integer,np.floating)) and 0 <= dias <= 7) \
@@ -291,7 +324,7 @@ def render_cards(dfv: pd.DataFrame):
                 elif d == 0: prazo_txt = "<span class='muted'>Vence hoje</span>"
                 else: prazo_txt = f"<span class='muted'>Faltam {d} dia(s)</span>"
 
-            with cols[i % 3]:
+            with cols[i % cols_por_linha]:
                 st.markdown(
                     f"""
                     <div class="{card_cls}">
@@ -300,7 +333,7 @@ def render_cards(dfv: pd.DataFrame):
                         <div class="card-sub">{descricao}</div>
                       </div>
                       <div class="card-row">
-                        {b_status}{b_sit}{b_qtd}{prazo_badge}{pn_badge}
+                        {b_os}{b_status}{b_sit}{b_qtd}{prazo_badge}{b_pn}
                       </div>
                       <div class="card-row">{prazo_txt}</div>
                     </div>
@@ -314,6 +347,7 @@ def render_cards(dfv: pd.DataFrame):
             st.write({
                 "Prefixo": row.get("Prefixo",""),
                 "Descrição": (row.get("Insumo","") or row.get("Item","")),
+                "OS": row.get("Orç/OS",""),
                 "Status": row.get("Status",""),
                 "Sit": row.get("Sit",""),
                 "P/N Compras": row.get("P/N Compras",""),
@@ -360,7 +394,7 @@ if habilitar_filtro_datas and "Retornar até" in df.columns:
 st.sidebar.markdown("---")
 ordem = st.sidebar.selectbox(
     "Ordenar por",
-    [c for c in ["Em atraso","Vence em 7 dias","Dias para devolver","Retornar até","Prefixo","Status","Sit","Item","Qtdade","Insumo"] if c in df.columns]
+    [c for c in ["Em atraso","Vence em 7 dias","Dias para devolver","Retornar até","Prefixo","Status","Sit","Item","Qtdade","Insumo","Orç/OS"] if c in df.columns]
 )
 ordem_cresc = st.sidebar.toggle("Ordem crescente", value=False if ordem in ["Em atraso","Vence em 7 dias"] else True)
 
@@ -373,7 +407,7 @@ elif vista == "Próx. 7 dias" and "Vence em 7 dias" in df_f: df_f = df_f[df_f["V
 elif vista == "Sem data" and "Sem data" in df_f: df_f = df_f[df_f["Sem data"]]
 # "Todos os itens": sem restrição por data
 
-# filtros
+# filtros básicos
 if f_status != "(Todos)" and "Status" in df_f: df_f = df_f[df_f["Status"].astype(str) == f_status]
 if f_sit    != "(Todos)" and "Sit" in df_f:    df_f = df_f[df_f["Sit"].astype(str) == f_sit]
 if f_prefixo and "Prefixo" in df_f:            df_f = df_f[df_f["Prefixo"].astype(str).str.contains(f_prefixo, case=False, na=False)]
@@ -396,22 +430,13 @@ if habilitar_filtro_datas and date_range and "Retornar até" in df_f and len(dat
 elif not inclui_sem_data and "Retornar até" in df_f:
     df_f = df_f[~df_f["Retornar até"].isna()]
 
-# ====== Filtro exigido: apenas OS no formato AAAA/MM/NNNN ======
-if "Orç/OS" in df_f.columns:
-    padrao_os = r"^\d{4}/\d{2}/\d{4}$"
-    df_f = df_f[df_f["Orç/OS"].astype(str).str.fullmatch(padrao_os, na=False)]
-
-# (Opcional) Manter apenas itens "em reparo" via coluna Sit, se existir:
-if "Sit" in df_f.columns:
-    df_f = df_f[df_f["Sit"].astype(str).str.contains(r"reparo", case=False, na=False)]
-
 # ordenação
 if ordem in df_f.columns:
     secund = "Retornar até" if ("Retornar até" in df_f.columns and ordem != "Retornar até") else None
     if secund: df_f = df_f.sort_values(by=[ordem, secund], ascending=[ordem_cresc, True])
     else:      df_f = df_f.sort_values(by=[ordem], ascending=[ordem_cresc])
 
-# ======================== HEADER & KPIs (NO CORPO) ========================
+# ======================== HEADER & KPIs ========================
 st.title("⚒️ Controle de Reparos")
 
 k1, k2, k3, k4, k5 = st.columns(5)
@@ -457,7 +482,7 @@ with tab1:
         "Prefixo","Item","Insumo","Orç/OS","Status","Sit","Qtdade",
         "P/N Compras","Retornar até","Dias para devolver","Em atraso","Vence em 7 dias","Sem data"
     ] if c in df_f.columns]
-    render_cards(df_f[cols_keep])
+    render_cards(df_f[cols_keep], cols_por_linha=3)
 
 with tab2:
     cA, = st.columns(1)
