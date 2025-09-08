@@ -55,8 +55,8 @@ h1, h2, h3 { letter-spacing: .2px; }
 .context { margin:.5rem 0 .75rem 0; }
 .small-muted { font-size: 0.85rem; opacity: 0.8; }
 
-/* tabelas/gráficos contorno */
-[data-testid="stDataFrame"], [data-testid="stVegaLiteChart"] { border-radius: 12px; overflow: hidden; border:1px solid #eee; }
+/* contorno para charts */
+[data-testid="stVegaLiteChart"] { border-radius: 12px; overflow: hidden; border:1px solid #eee; }
 </style>
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
@@ -94,16 +94,15 @@ def parse_mixed_dates(series: pd.Series) -> pd.Series:
 def limpar_status(valor: str) -> str:
     """
     Regras de exibição do Status:
-      - Contém P.O (ou variações) + 'fechad' -> 'P.O Fechada'
-      - Contém P.O (ou variações) -> 'P.O'
-      - Contém 'não/nao/n?o comprado' -> 'Não comprado'
-      - Caso contrário, mantém original (sem trim/acento).
+      - P.O (ou variações) + 'fechad' -> 'P.O Fechada'
+      - P.O simples -> 'P.O'
+      - 'não/nao/n?o comprad' -> 'Não comprado'
+      - caso contrário, mantém original
     """
     if pd.isna(valor):
         return valor
     raw = str(valor).strip()
     n = _norm(raw).lower()
-    # normalizar padrões de PO: "p.o", "p o", "po"
     has_po = bool(re.search(r"\b(?:p\s*\.?\s*o|po)\b", n))
     closed = "fechad" in n
     nao_comprado = ("nao comprad" in n) or ("não comprad" in raw.lower()) or ("n?o comprad" in raw.lower())
@@ -114,6 +113,20 @@ def limpar_status(valor: str) -> str:
     if has_po:
         return "P.O"
     return raw
+
+def normalizar_valores(df: pd.DataFrame) -> pd.DataFrame:
+    """Correções pontuais de mojibake sem mexer no resto dos textos."""
+    out = df.copy()
+    # Normaliza Grupo -> 'Peças' quando vier 'pe?cas' ou 'pecas'
+    if "Grupo" in out.columns:
+        def fix_grupo(x):
+            if pd.isna(x): return x
+            s = str(x)
+            if re.search(r"\bpe\?cas\b", s, flags=re.IGNORECASE) or re.search(r"\bpecas\b", _norm(s), flags=re.IGNORECASE):
+                return "Peças"
+            return s
+        out["Grupo"] = out["Grupo"].apply(fix_grupo)
+    return out
 
 # ======================== LOAD ========================
 @st.cache_data(show_spinner=False)
@@ -166,7 +179,7 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
     if "Qtdade" in df.columns:
         df["Qtdade"] = pd.to_numeric(df["Qtdade"], errors="coerce").fillna(0).astype(int)
 
-    # status limpo (substitui Status para exibição/filtragem)
+    # status limpo
     if "Status" in df.columns:
         df["Status"] = df["Status"].apply(limpar_status)
 
@@ -183,6 +196,8 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
         df["Vence em 7 dias"] = False
         df["Sem data"] = True
 
+    # correções pontuais de valores (ex.: 'pe?cas' -> 'Peças')
+    df = normalizar_valores(df)
     return df
 
 # ======================== RENDER DE CARDS ========================
@@ -191,70 +206,90 @@ def card_badge(texto: str, tone: str = "gray") -> str:
     return f'<span class="badge {tone_cls}">{texto}</span>'
 
 def render_cards(dfv: pd.DataFrame):
-    """Renderiza itens em formato de cartões em grade responsiva (3 colunas)."""
+    """Renderiza itens em cartões; com fallback pra evitar tela branca."""
     if dfv.empty:
         st.info("Nenhum item encontrado com os filtros atuais.")
         return
-    cols = st.columns(3)  # grade de 3 colunas
-    i = 0
-    for _, row in dfv.iterrows():
-        # estilo do card pelo prazo
-        card_cls = ""
-        if row.get("Em atraso", False):
-            card_cls = "card card-danger"
-        elif row.get("Vence em 7 dias", False):
-            card_cls = "card card-warn"
-        else:
+
+    try:
+        cols = st.columns(3)  # grade de 3 colunas
+        i = 0
+        for _, row in dfv.iterrows():
+            # estilo do card pelo prazo
             card_cls = "card"
+            if row.get("Em atraso", False):
+                card_cls = "card card-danger"
+            elif row.get("Vence em 7 dias", False):
+                card_cls = "card card-warn"
 
-        # campos principais
-        titulo = str(row.get("Prefixo", "")) or "—"
-        sub = str(row.get("Item", "")) or str(row.get("Orç/OS","")) or "—"
-        status_txt = str(row.get("Status","—"))
-        sit_txt = str(row.get("Sit","")).strip()
-        grupo_txt = str(row.get("Grupo","")).strip()
-        qtd_txt = str(row.get("Qtdade","")).strip() if "Qtdade" in row else ""
-        dt_ret = row.get("Retornar até", pd.NaT)
-        dias = row.get("Dias para devolver", None)
+            # campos principais
+            titulo = str(row.get("Prefixo", "")) or "—"
+            sub = str(row.get("Item", "")) or str(row.get("Orç/OS","")) or "—"
+            status_txt = str(row.get("Status","—"))
+            sit_txt = str(row.get("Sit","")).strip()
+            grupo_txt = str(row.get("Grupo","")).strip()
+            qtd_val = row.get("Qtdade", "")
+            qtd_txt = "" if pd.isna(qtd_val) else str(int(qtd_val)) if str(qtd_val).isdigit() else str(qtd_val)
 
-        # badges
-        b_status = card_badge(status_txt, "blue" if "P.O" in status_txt else ("red" if status_txt.lower().startswith("n") else "gray"))
-        b_sit = card_badge(f"Sit: {sit_txt}") if sit_txt else ""
-        b_grupo = card_badge(f"Grupo: {grupo_txt}") if grupo_txt else ""
-        b_qtd = card_badge(f"Qtd: {qtd_txt}", "green") if qtd_txt not in ["", "0", "nan"] else ""
-        if pd.notna(dt_ret):
-            when = dt_ret.strftime("%d/%m/%Y")
-            prazo_badge = card_badge(f"Devolver: {when}", "amber" if (dias is not None and dias <= 7 and dias >= 0) else ("red" if dias is not None and dias < 0 else "gray"))
-        else:
-            prazo_badge = card_badge("Sem data", "gray")
+            dt_ret = row.get("Retornar até", pd.NaT)
+            dias = row.get("Dias para devolver", None)
 
-        # linha de contexto de prazo
-        prazo_txt = ""
-        if dias is not None and pd.notna(dias):
-            if dias < 0:
-                prazo_txt = f"<span class='muted'>Atrasado há {abs(int(dias))} dia(s)</span>"
-            elif dias == 0:
-                prazo_txt = "<span class='muted'>Vence hoje</span>"
+            # badges
+            b_status = card_badge(status_txt, "blue" if "P.O" in status_txt else ("red" if status_txt.lower().startswith("n") else "gray"))
+            b_sit = card_badge(f"Sit: {sit_txt}") if sit_txt else ""
+            b_grupo = card_badge(f"Grupo: {grupo_txt}") if grupo_txt else ""
+            b_qtd = card_badge(f"Qtd: {qtd_txt}", "green") if qtd_txt not in ["", "0", "nan"] else ""
+            if pd.notna(dt_ret):
+                when = dt_ret.strftime("%d/%m/%Y")
+                tone = "amber" if (isinstance(dias, (int, float, np.integer, np.floating)) and 0 <= dias <= 7) else ("red" if isinstance(dias, (int, float, np.integer, np.floating)) and dias < 0 else "gray")
+                prazo_badge = card_badge(f"Devolver: {when}", tone)
             else:
-                prazo_txt = f"<span class='muted'>Faltam {int(dias)} dia(s)</span>"
+                prazo_badge = card_badge("Sem data", "gray")
 
-        with cols[i % 3]:
-            st.markdown(
-                f"""
-                <div class="{card_cls}">
-                  <div class="card-header">
-                    <div class="card-title">{titulo}</div>
-                    <div class="card-sub">{sub}</div>
-                  </div>
-                  <div class="card-row">
-                    {b_status}{b_sit}{b_grupo}{b_qtd}{prazo_badge}
-                  </div>
-                  <div class="card-row">{prazo_txt}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
+            # linha de contexto de prazo
+            prazo_txt = ""
+            if isinstance(dias, (int, float, np.integer, np.floating)) and not pd.isna(dias):
+                d = int(dias)
+                if d < 0:
+                    prazo_txt = f"<span class='muted'>Atrasado há {abs(d)} dia(s)</span>"
+                elif d == 0:
+                    prazo_txt = "<span class='muted'>Vence hoje</span>"
+                else:
+                    prazo_txt = f"<span class='muted'>Faltam {d} dia(s)</span>"
+
+            with cols[i % 3]:
+                st.markdown(
+                    f"""
+                    <div class="{card_cls}">
+                      <div class="card-header">
+                        <div class="card-title">{titulo}</div>
+                        <div class="card-sub">{sub}</div>
+                      </div>
+                      <div class="card-row">
+                        {b_status}{b_sit}{b_grupo}{b_qtd}{prazo_badge}
+                      </div>
+                      <div class="card-row">{prazo_txt}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            i += 1
+    except Exception as e:
+        # Fallback duro: evita "tela branca" se qualquer item der erro
+        st.error(f"Falha ao renderizar os cartões ({type(e).__name__}). Mostrando visão alternativa simples.")
+        # mostra apenas colunas seguras como texto
+        for _, row in dfv.iterrows():
+            st.write(
+                {
+                    "Prefixo": row.get("Prefixo", ""),
+                    "Item": row.get("Item", ""),
+                    "Status": row.get("Status", ""),
+                    "Sit": row.get("Sit", ""),
+                    "Grupo": row.get("Grupo", ""),
+                    "Retornar até": row.get("Retornar até", ""),
+                    "Dias p/ devolver": row.get("Dias para devolver", ""),
+                }
             )
-        i += 1
 
 # ======================== SIDEBAR (FILTROS) ========================
 st.sidebar.title("📌 Filtros")
@@ -393,15 +428,15 @@ with tab2:
     with cA:
         if "Status" in df_f.columns and not df_f.empty:
             st.subheader("Distribuição por Status")
-            st.bar_chart(df_f["Status"].value_counts().sort_values(ascending=False), width="stretch")
+            st.bar_chart(df_f["Status"].value_counts().sort_values(ascending=False))
     with cB:
         if "Grupo" in df_f.columns and not df_f.empty:
             st.subheader("Distribuição por Grupo")
-            st.bar_chart(df_f["Grupo"].value_counts().sort_values(ascending=False), width="stretch")
+            st.bar_chart(df_f["Grupo"].value_counts().sort_values(ascending=False))
     if "Sit" in df_f.columns and not df_f.empty:
         st.subheader("Distribuição por Sit")
-        st.bar_chart(df_f["Sit"].value_counts().sort_values(ascending=False), width="stretch")
+        st.bar_chart(df_f["Sit"].value_counts().sort_values(ascending=False))
 
 # ======================== RODAPÉ ========================
 st.markdown("---")
-st.caption("Dica: Use as 'Vistas rápidas' para alternar entre atrasados, próximos 7 dias e sem data.")
+st.caption("Dica: Cards priorizam leitura rápida; use as Vistas rápidas para alternar entre atrasados, próximos 7 dias e sem data.")
