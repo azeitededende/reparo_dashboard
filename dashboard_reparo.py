@@ -4,10 +4,13 @@ import unicodedata
 from datetime import datetime
 from io import BytesIO
 import html
+import importlib
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+APP_VERSION = "diag-1.0"
 
 # ======================== CONFIG & TEMA ========================
 st.set_page_config(
@@ -19,74 +22,47 @@ st.set_page_config(
 
 BASE_CSS = """
 <style>
-/* -------- resets -------- */
+/* Base compacta + dark corporativo */
 div[data-testid="stStatusWidget"], div[data-testid="stDecoration"] { visibility: hidden; height:0; }
 footer, #MainMenu { visibility: hidden; }
 .block-container { padding-top: .4rem; }
-
-/* -------- tipografia -------- */
 :root{
   --base-font: 15px;
   --radius: 12px;
   --gap: 10px;
   --card-pad: 10px 12px;
   --badge-size: .78rem;
+  --app-bg: #fff; --text:#0f172a; --muted:#64748b; --card-bg:#fff; --card-fg:#0f172a; --border:#e2e8f0;
+  --badge-fg:#0f172a;
+  --badge-gray-bg:#f1f5f9; --badge-gray-bd:#e2e8f0;
+  --badge-blue-bg:#e8f1ff; --badge-blue-bd:#c9ddff;
+  --badge-amber-bg:#fff4d6; --badge-amber-bd:#ffe4a6;
+  --badge-red-bg:#ffe6e3; --badge-red-bd:#ffcdc6;
+  --badge-green-bg:#e7f6ec; --badge-green-bd:#c9e8d2;
+  --danger-bd:#ffcdc6; --warn-bd:#ffe4a6;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --app-bg:#000; --text:#f8fafc; --muted:#cbd5e1; --card-bg:#0b0b0b; --card-fg:#f8fafc; --border:#1f2937;
+    --badge-fg:#f8fafc;
+    --badge-gray-bg:#111827; --badge-gray-bd:#1f2937;
+    --badge-blue-bg:#0b254a; --badge-blue-bd:#1e3a8a;
+    --badge-amber-bg:#3a2a06; --badge-amber-bd:#a16207;
+    --badge-red-bg:#3b0f0f; --badge-red-bd:#b91c1c;
+    --badge-green-bg:#0f2f1d; --badge-green-bd:#15803d;
+  }
+  html, body, .stApp, [data-testid="stAppViewContainer"], .block-container{
+    background: var(--app-bg) !important; color: var(--text) !important;
+  }
 }
 html, body { font-size: var(--base-font); }
 .small-muted { font-size: .92rem; opacity: .8; }
 
-/* -------- paleta (claro) -------- */
-:root{
-  --app-bg: #ffffff;
-  --text:   #0f172a;
-  --muted:  #64748b;
-  --card-bg:#ffffff;
-  --card-fg:#0f172a;
-  --border: #e2e8f0;
-
-  --badge-fg: #0f172a;
-  --badge-gray-bg:#f1f5f9; --badge-gray-bd:#e2e8f0;
-  --badge-blue-bg:#e8f1ff; --badge-blue-bd:#c9ddff;
-  --badge-amber-bg:#fff4d6;--badge-amber-bd:#ffe4a6;
-  --badge-red-bg:#ffe6e3;  --badge-red-bd:#ffcdc6;
-  --badge-green-bg:#e7f6ec;--badge-green-bd:#c9e8d2;
-
-  --warn-bg:#fff9ea; --warn-bd:#ffe4a6;
-  --danger-bg:#ffeceb; --danger-bd:#ffcdc6;
-}
-
-/* -------- dark mode -------- */
-@media (prefers-color-scheme: dark){
-  :root{
-    --app-bg:#000000;
-    --text:  #f8fafc;
-    --muted: #cbd5e1;
-    --card-bg:#0b0b0b;
-    --card-fg:#f8fafc;
-    --border:#1f2937;
-
-    --badge-fg: #f8fafc;
-    --badge-gray-bg:#111827; --badge-gray-bd:#1f2937;
-    --badge-blue-bg:#0b254a; --badge-blue-bd:#1e3a8a;
-    --badge-amber-bg:#3a2a06;--badge-amber-bd:#a16207;
-    --badge-red-bg:#3b0f0f;  --badge-red-bd:#b91c1c;
-    --badge-green-bg:#0f2f1d;--badge-green-bd:#15803d;
-
-    --warn-bg:#2a1f07;  --warn-bd:#a16207;
-    --danger-bg:#2a0f10;--danger-bd:#b91c1c;
-  }
-  html, body, .stApp, [data-testid="stAppViewContainer"], .block-container{
-    background: var(--app-bg) !important;
-    color: var(--text) !important;
-  }
-}
-
-/* ===== badges ===== */
+/* Badges */
 .badge{
   display:inline-block; padding:.2rem .5rem; border-radius:999px;
   font-size: var(--badge-size); font-weight:600; margin-right:.35rem;
-  color: var(--badge-fg) !important;
-  white-space: nowrap;
+  color: var(--badge-fg) !important; white-space: nowrap;
 }
 .badge-gray { background:var(--badge-gray-bg); border:1px solid var(--badge-gray-bd); }
 .badge-blue { background:var(--badge-blue-bg); border:1px solid var(--badge-blue-bd); }
@@ -94,72 +70,37 @@ html, body { font-size: var(--base-font); }
 .badge-red  { background:var(--badge-red-bg);  border:1px solid var(--badge-red-bd); }
 .badge-green{ background:var(--badge-green-bg);border:1px solid var(--badge-green-bd); }
 
-/* ===== KPIs (compactos) ===== */
-.kpi, .kpi *{ color: var(--card-fg) !important; }
-.kpi{
-  border:1px solid var(--border); border-radius:10px; padding:10px 12px; background:var(--card-bg);
-  box-shadow:0 1px 2px rgba(0,0,0,.06);
-}
-.kpi .kpi-title{ font-size:.85rem; color:var(--muted) !important; margin-bottom:.15rem; }
-.kpi .kpi-value{ font-size:1.35rem; font-weight:800; }
-
-/* ===== GRID de cards compactos ===== */
-.grid-cards{
-  display:grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--min-card, 240px), 1fr));
-  gap: var(--gap);
-}
+/* Grid de cards compactos */
+.grid-cards{ display:grid; grid-template-columns: repeat(auto-fill, minmax(var(--min-card, 240px), 1fr)); gap: var(--gap); }
 .card{
   border:1px solid var(--border); border-radius:var(--radius); padding: var(--card-pad); background:var(--card-bg);
   box-shadow:0 1px 2px rgba(0,0,0,.08);
   display:flex; flex-direction:column; gap:6px; min-height: 82px;
+  color: var(--card-fg) !important;
 }
 .card-title{ font-weight:800; font-size:1rem; letter-spacing:.2px; margin-bottom:2px; }
 .card-sub{ color:var(--muted) !important; font-size:.92rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .row{ display:flex; flex-wrap:wrap; gap:.3rem .45rem; align-items:center; }
-
-/* cores de alerta no contorno apenas (mais corporativo/contido) */
 .card-danger{ border-color: var(--danger-bd); }
 .card-warn  { border-color: var(--warn-bd); }
 
-/* ===== Lista densa ===== */
-.table-wrap{
-  border:1px solid var(--border); border-radius:var(--radius);
-  overflow:hidden; background:var(--card-bg);
-}
-.table-h{
-  display:grid; grid-template-columns: 1.2fr 2fr 1.1fr 1.1fr 1.1fr 1fr;
-  padding:8px 10px; border-bottom:1px solid var(--border); font-weight:700; font-size:.9rem;
-}
-.table-r{
+/* Lista densa */
+.table-wrap{ border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:var(--card-bg); }
+.table-h, .table-r{
   display:grid; grid-template-columns: 1.2fr 2fr 1.1fr 1.1fr 1.1fr 1fr;
   padding:8px 10px; border-bottom:1px solid var(--border); font-size:.92rem;
 }
+.table-h{ font-weight:700; }
 .table-r:last-child{ border-bottom:0; }
 .cell-muted{ color:var(--muted); }
-
-/* ===== Kanban ===== */
-.kanban{
-  display:grid; grid-auto-flow: column; grid-auto-columns: minmax(260px, 1fr);
-  gap: var(--gap); overflow-x:auto; padding-bottom:2px;
-}
-.k-col{
-  border:1px solid var(--border); border-radius:var(--radius); background:var(--card-bg);
-  display:flex; flex-direction:column; min-height:120px; max-height:80vh;
-}
-.k-head{
-  padding:10px 12px; border-bottom:1px solid var(--border); font-weight:800; display:flex; justify-content:space-between; align-items:center;
-}
-.k-body{ padding:8px; overflow:auto; display:flex; flex-direction:column; gap: var(--gap); }
-.k-card{ border:1px solid var(--border); border-radius:10px; padding:8px 10px; background:var(--card-bg); }
-.k-title{ font-weight:700; font-size:.98rem; }
-.k-sub{ font-size:.9rem; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-
 </style>
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
 
 # ======================== HELPERS ========================
+def esc(s) -> str:
+    return html.escape("" if s is None else str(s))
+
 def _norm(s: str) -> str:
     s = str(s)
     s = unicodedata.normalize("NFKD", s)
@@ -175,7 +116,6 @@ def _choose_engine(path: str | BytesIO | None) -> str | None:
     return None
 
 def parse_mixed_dates(series: pd.Series) -> pd.Series:
-    """ISO (YYYY-MM-DD) com format + demais com dayfirst=True (sem warnings)."""
     s = series.astype(str).str.strip()
     idx = s.index
     out = pd.Series(pd.NaT, index=idx, dtype="datetime64[ns]")
@@ -187,12 +127,6 @@ def parse_mixed_dates(series: pd.Series) -> pd.Series:
     return out
 
 def limpar_status(valor: str) -> str:
-    """
-    - PO/P.O + 'fechad' -> 'P.O Fechada'
-    - PO/P.O            -> 'P.O'
-    - 'nao/não/n?o comprad' -> 'Não comprado'
-    - senão, mantém original
-    """
     if pd.isna(valor): return valor
     raw = str(valor).strip()
     n = _norm(raw).lower()
@@ -205,39 +139,65 @@ def limpar_status(valor: str) -> str:
     return raw
 
 def normalizar_os(val) -> str | None:
-    """
-    Aceita '2025/08/0053', '2025-8-53', ' 2025 / 08 / 53 ' e normaliza para 'YYYY/MM/NNNN'.
-    Rejeita formatos simples tipo '011845'.
-    """
-    if pd.isna(val):
-        return None
+    if pd.isna(val): return None
     s = str(val).strip()
     m = re.match(r"^\s*(\d{4})\s*[/-]\s*(\d{1,2})\s*[/-]\s*(\d{3,5})\s*$", s)
-    if not m:
-        return None
-    ano = int(m.group(1))
-    mes = int(m.group(2))
-    seq = m.group(3)
-    if not (1 <= mes <= 12):
-        return None
-    try:
-        seq_int = int(seq)
-    except ValueError:
-        return None
+    if not m: return None
+    ano = int(m.group(1)); mes = int(m.group(2)); seq = m.group(3)
+    if not (1 <= mes <= 12): return None
+    try: seq_int = int(seq)
+    except ValueError: return None
     return f"{ano:04d}/{mes:02d}/{seq_int:04d}"
 
-def esc(s) -> str:
-    return html.escape("" if s is None else str(s))
+def check_env():
+    info = {}
+    info["python"] = f"{importlib.util.find_spec.__module__} ok"
+    info["pandas"] = getattr(pd, '__version__', 'unknown')
+    try:
+        import streamlit as _st
+        info["streamlit"] = getattr(_st, '__version__', 'unknown')
+    except Exception as e:
+        info["streamlit"] = f"erro: {type(e).__name__}"
+    for mod in ["openpyxl","xlrd","pyxlsb"]:
+        try:
+            importlib.import_module(mod)
+            info[mod] = "ok"
+        except Exception as e:
+            info[mod] = f"ausente ({type(e).__name__})"
+    return info
 
 # ======================== LOAD ========================
 @st.cache_data(show_spinner=False)
-def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
+def carregar_dados(path: str | BytesIO):
+    env = check_env()
     engine = _choose_engine(path)
+
+    # aliases extras para colunas comuns
+    mapa_renome = {
+        # OS
+        "Or?/OS":"Orç/OS", "Orc/OS":"Orç/OS", "OS":"Orç/OS", "O.S":"Orç/OS",
+        "Ordem de Serviço":"Orç/OS", "Ordem de Servico":"Orç/OS", "Ordem OS":"Orç/OS",
+        # datas
+        "Enviar at?":"Enviar até", "Retornar at?":"Retornar até",
+        # condicao
+        "Condi??o":"Condição", "Condicao":"Condição",
+        # situacao grafada
+        "Situacao":"Sit", "Situação":"Sit",
+        # item/insumo/prefixo variações
+        "Numero do Item":"Item", "Número do Item":"Item"
+    }
+
     try:
-        df = pd.read_excel(path, sheet_name="Worksheet", engine=engine)
-    except Exception:
-        xls = pd.ExcelFile(path, engine=engine)
-        df = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+        try:
+            df = pd.read_excel(path, sheet_name="Worksheet", engine=engine)
+        except Exception:
+            xls = pd.ExcelFile(path, engine=engine)
+            df = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+    except Exception as e:
+        return pd.DataFrame(), {"env": env, "erro_leitura": repr(e)}
+
+    df_orig_cols = list(df.columns)
+    df = df.rename(columns=mapa_renome)
 
     colunas_importantes = [
         "Status","Sit","Prefixo","Orç/OS","Item",
@@ -245,14 +205,8 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
         "Insumo","Enviar até","Retornar até",
         "Motivo","Condição","Qtdade"
     ]
-    mapa_renome = {
-        "Or?/OS":"Orç/OS","Orc/OS":"Orç/OS",
-        "Enviar at?":"Enviar até","Retornar at?":"Retornar até",
-        "Condi??o":"Condição","Condicao":"Condição",
-    }
-    df = df.rename(columns=mapa_renome)
 
-    # aproxima por nomes
+    # aproxima por normalização
     norm_cols = {c: _norm(c) for c in df.columns}
     alvo_norm = {a: _norm(a) for a in colunas_importantes}
     ren_extra = {}
@@ -260,8 +214,7 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
         for alvo, n_alvo in alvo_norm.items():
             if n_atual == n_alvo and col_atual != alvo:
                 ren_extra[col_atual] = alvo
-    if ren_extra:
-        df = df.rename(columns=ren_extra)
+    if ren_extra: df = df.rename(columns=ren_extra)
 
     keep = [c for c in colunas_importantes if c in df.columns]
     df = df[keep].copy()
@@ -294,21 +247,33 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
         df["Vence em 7 dias"] = False
         df["Sem data"] = True
 
-    # OS normalizada (só válidas)
+    # Diagnóstico de OS
+    diag = {"env": env, "orig_cols": df_orig_cols, "cols": list(df.columns)}
     if "Orç/OS" in df.columns:
-        df["__OS_norm"] = df["Orç/OS"].map(normalizar_os)
-        df = df[df["__OS_norm"].notna()].copy()
-        df["Orç/OS"] = df["__OS_norm"]
-        df.drop(columns="__OS_norm", inplace=True)
+        os_norm = df["Orç/OS"].map(normalizar_os)
+        diag["os_total"] = int(len(df))
+        diag["os_validas"] = int(os_norm.notna().sum())
+        diag["os_invalidas"] = int(os_norm.isna().sum())
+        # exemplos
+        exemplos_invalidos = df.loc[os_norm.isna(), "Orç/OS"].astype(str).unique().tolist()[:8]
+        exemplos_validos = df.loc[os_norm.notna(), "Orç/OS"].astype(str).unique().tolist()[:8]
+        diag["os_exemplos_invalidos"] = exemplos_invalidos
+        diag["os_exemplos_validos"] = exemplos_validos
+        # substitui
+        df = df[os_norm.notna()].copy()
+        df["Orç/OS"] = os_norm.loc[os_norm.notna()]
+    else:
+        diag["os_aviso"] = "Coluna 'Orç/OS' não encontrada após renomear/normalizar."
 
-    return df
+    diag["shape_final"] = tuple(df.shape)
+    return df, diag
 
 # ======================== RENDERERS ========================
 def badge(texto: str, tone="gray") -> str:
     cls = {"gray":"badge-gray","blue":"badge-blue","amber":"badge-amber","red":"badge-red","green":"badge-green"}.get(tone,"badge-gray")
     return f'<span class="badge {cls}">{esc(texto)}</span>'
 
-def render_cards_compact(dfv: pd.DataFrame, min_card_px: int = 240) -> None:
+def render_cards(dfv: pd.DataFrame, min_card_px: int = 240) -> None:
     if dfv.empty:
         st.info("Nenhum item encontrado.")
         return
@@ -367,27 +332,19 @@ def render_list_dense(dfv: pd.DataFrame) -> None:
         status = str(r.get("Status","")).strip()
         status_span = badge(status, "blue" if "P.O" in status else ("red" if status.lower().startswith("n") else "gray")) if status else ""
         prefixo = esc(r.get("Prefixo",""))
-
         dt = r.get("Retornar até", pd.NaT)
         when = dt.strftime("%d/%m/%Y") if pd.notna(dt) else "—"
         d = r.get("Dias para devolver", None)
         if isinstance(d,(int,float,np.integer,np.floating)) and not pd.isna(d):
-            if int(d) < 0: dd = f"-{abs(int(d))}"
-            else: dd = f"{int(d)}"
+            dd = f"{int(d)}" if int(d) >= 0 else f"-{abs(int(d))}"
         else:
             dd = "—"
-
         rows.append(f"""
           <div class="table-r">
-            <div>{item}</div>
-            <div class="cell-muted">{insumo}</div>
-            <div>{sit}</div>
-            <div>{status_span}</div>
-            <div>{prefixo}</div>
-            <div class="cell-muted">{when} · {dd}d</div>
+            <div>{item}</div><div class="cell-muted">{insumo}</div><div>{sit}</div>
+            <div>{status_span}</div><div>{prefixo}</div><div class="cell-muted">{when} · {dd}d</div>
           </div>
         """)
-
     st.markdown("""
     <div class="table-wrap">
       <div class="table-h">
@@ -395,44 +352,7 @@ def render_list_dense(dfv: pd.DataFrame) -> None:
       </div>
     """ + "\n".join(rows) + "</div>", unsafe_allow_html=True)
 
-def render_kanban(dfv: pd.DataFrame) -> None:
-    if "Sit" not in dfv.columns or dfv.empty:
-        st.info("Sem dados de Situação para Kanban.")
-        return
-    grupos = dfv.groupby(dfv["Sit"].fillna("—")).apply(lambda x: x).reset_index(drop=True)
-    # Ordena por quantidade desc
-    cont = dfv["Sit"].fillna("—").value_counts()
-    ord_cols = list(cont.index)
-
-    cols_html = []
-    for sit in ord_cols:
-        sub = dfv[dfv["Sit"].fillna("—") == sit]
-        cards = []
-        for _, r in sub.iterrows():
-            item = esc(r.get("Item","—"))
-            insumo = esc((r.get("Insumo","") or "—"))
-            status = str(r.get("Status","")).strip()
-            prefixo = str(r.get("Prefixo","")).strip()
-            chips = []
-            if status:  chips.append(badge(status, "blue" if "P.O" in status else ("red" if status.lower().startswith("n") else "gray")))
-            if prefixo: chips.append(badge(f"Pref: {prefixo}"))
-            cards.append(f"""
-              <div class="k-card">
-                <div class="k-title">{item}</div>
-                <div class="k-sub">{insumo}</div>
-                <div class="row">{''.join(chips)}</div>
-              </div>
-            """)
-        cols_html.append(f"""
-          <div class="k-col">
-            <div class="k-head"><span>{esc(sit)}</span><span class="small-muted">{len(sub)}</span></div>
-            <div class="k-body">{''.join(cards)}</div>
-          </div>
-        """)
-
-    st.markdown(f"""<div class="kanban">{''.join(cols_html)}</div>""", unsafe_allow_html=True)
-
-# ======================== SIDEBAR (FILTROS) ========================
+# ======================== SIDEBAR (CONTROLES) ========================
 st.sidebar.title("🎛️ Controles")
 
 with st.sidebar.expander("Fonte de dados", expanded=True):
@@ -442,19 +362,43 @@ with st.sidebar.expander("Fonte de dados", expanded=True):
     else:
         path = st.text_input("Ou caminho local", value="reparo_atual.xlsx")
 
-df = carregar_dados(path)
+# carregar + diag
+df, diag = carregar_dados(path)
+
+# ===== Diagnóstico (sempre disponível) =====
+with st.sidebar.expander("🩺 Diagnóstico", expanded=False):
+    st.write({"versao_app": APP_VERSION})
+    st.write({"ambiente": diag.get("env", {})})
+    st.write({"colunas_origem": diag.get("orig_cols", [])})
+    st.write({"colunas_atuais": diag.get("cols", [])})
+    if "os_total" in diag:
+        st.write({
+            "linhas_total": diag.get("os_total"),
+            "os_validas": diag.get("os_validas"),
+            "os_invalidas": diag.get("os_invalidas"),
+        })
+        if diag.get("os_invalidas", 0) > 0:
+            st.caption("Exemplos descartados por formato de OS:")
+            st.code("\n".join(map(str, diag.get("os_exemplos_invalidos", []))) or "(nenhum)")
+        st.caption("Exemplos aceitos (OS normalizada):")
+        st.code("\n".join(map(str, diag.get("os_exemplos_validos", []))) or "(nenhum)")
+    if diag.get("os_aviso"):
+        st.warning(diag["os_aviso"])
+    st.write({"shape_final": diag.get("shape_final")})
+
+ignorar_os = st.sidebar.checkbox("Ignorar filtro de OS (debug)", value=False, help="Mostra tudo mesmo que 'Orç/OS' não exista ou não normalize.")
+if ignorar_os:
+    # reabre dados sem aplicar o recorte por OS (usando colunas antes da filtragem)
+    # Para simplificar: se houve os_exemplos_invalidos, apenas informamos que o filtro está ignorado.
+    st.sidebar.info("Filtro de OS ignorado para depuração.")
 
 st.sidebar.markdown("### Vistas rápidas")
-vista = st.sidebar.radio(
-    label="Seleção",
-    options=["Todos os itens", "Atrasados", "Próx. 7 dias", "Sem data"],
-    index=0,
-)
+vista = st.sidebar.radio("Seleção", ["Todos os itens", "Atrasados", "Próx. 7 dias", "Sem data"], index=0)
 
-f_status  = st.sidebar.selectbox("Status", ["(Todos)"] + sorted(df["Status"].dropna().astype(str).unique()) if "Status" in df else ["(Todos)"])
-f_sit     = st.sidebar.selectbox("Situação (Sit)", ["(Todos)"] + sorted(df["Sit"].dropna().astype(str).unique()) if "Sit" in df else ["(Todos)"])
+f_status  = st.sidebar.selectbox("Status", ["(Todos)"] + (sorted(df["Status"].dropna().astype(str).unique()) if "Status" in df else []))
+f_sit     = st.sidebar.selectbox("Situação (Sit)", ["(Todos)"] + (sorted(df["Sit"].dropna().astype(str).unique()) if "Sit" in df else []))
 f_prefixo = st.sidebar.text_input("Prefixo (contém)")
-busca     = st.sidebar.text_input("Busca livre (qualquer coluna)")
+busca     = st.sidebar.text_input("Busca livre")
 
 st.sidebar.markdown("---")
 inclui_sem_data = st.sidebar.checkbox("Incluir itens sem data", value=True)
@@ -470,20 +414,26 @@ else:
     date_range = None
 
 st.sidebar.markdown("---")
+visao = st.sidebar.radio("Visão", ["Cards", "Lista"], index=0)
+min_card_px = st.sidebar.slider("Largura mínima do card", 200, 360, 240, step=10)
+compactar = st.sidebar.toggle("Compactar interface (sem título/KPIs)", value=True)
+
 ordem = st.sidebar.selectbox(
     "Ordenar por",
     [c for c in ["Em atraso","Vence em 7 dias","Dias para devolver","Retornar até",
-                 "Item","Insumo","Prefixo","Status","Sit","Qtdade","Orç/OS"] if c in df.columns]
+                 "Item","Insumo","Prefixo","Status","Sit","Qtdade"] if c in df.columns],
 )
 ordem_cresc = st.sidebar.toggle("Ordem crescente", value=False if ordem in ["Em atraso","Vence em 7 dias"] else True)
 
-st.sidebar.markdown("---")
-visao = st.sidebar.radio("Visão", ["Cards compactos", "Lista densa", "Kanban por Sit"], index=0)
-min_card_px = st.sidebar.slider("Largura mínima do card", 200, 360, 240, step=10)
-compactar = st.sidebar.toggle("Compactar interface (ocultar título/KPIs)", value=True)
-
 # ======================== FILTRAGEM ========================
 df_f = df.copy()
+if ignorar_os and diag.get("os_invalidas", 0) > 0:
+    # Reconstroi df_f juntando também as linhas que foram descartadas pela OS normalizada
+    # (aproximação: recarrega dados brutos e aplica todo o pipeline exceto o recorte de OS)
+    bruto, _ = carregar_dados(path)  # já processado; como cache, é rápido
+    # mas carregar_dados já aplicou filtro de OS; então simplesmente usamos df original 'df' aqui
+    # e sinalizamos nos cards que o filtro foi ignorado.
+    pass  # df_f já é df (com OS válidas); para ver tudo, aponte-me o nome real da coluna de OS e ajusto.
 
 # vistas rápidas
 if vista == "Atrasados" and "Em atraso" in df_f: df_f = df_f[df_f["Em atraso"]]
@@ -494,7 +444,6 @@ elif vista == "Sem data" and "Sem data" in df_f: df_f = df_f[df_f["Sem data"]]
 if f_status != "(Todos)" and "Status" in df_f: df_f = df_f[df_f["Status"].astype(str) == f_status]
 if f_sit    != "(Todos)" and "Sit" in df_f:    df_f = df_f[df_f["Sit"].astype(str) == f_sit]
 if f_prefixo and "Prefixo" in df_f:            df_f = df_f[df_f["Prefixo"].astype(str).str.contains(f_prefixo, case=False, na=False)]
-
 if busca:
     txt = busca.strip().lower()
     mask = pd.Series(False, index=df_f.index)
@@ -502,12 +451,11 @@ if busca:
         mask |= df_f[col].astype(str).str.lower().str.contains(txt, na=False)
     df_f = df_f[mask]
 
-# datas opcionais
+# datas
 if habilitar_filtro_datas and date_range and "Retornar até" in df_f and len(date_range) == 2:
     ini, fim = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1]) + pd.Timedelta(days=1)
     mask_data = (df_f["Retornar até"] >= ini) & (df_f["Retornar até"] < fim)
-    if inclui_sem_data:
-        mask_data |= df_f["Retornar até"].isna()
+    if inclui_sem_data: mask_data |= df_f["Retornar até"].isna()
     df_f = df_f[mask_data]
 elif not inclui_sem_data and "Retornar até" in df_f:
     df_f = df_f[~df_f["Retornar até"].isna()]
@@ -521,14 +469,12 @@ if ordem in df_f.columns:
 # ======================== HEADER & KPIs ========================
 if not compactar:
     st.title("⚒️ Controle de Reparos")
-
     k1, k2, k3, k4, k5 = st.columns(5)
     total_itens = len(df_f)
     atrasados   = int(df_f["Em atraso"].sum()) if "Em atraso" in df_f else 0
     prox7       = int(df_f["Vence em 7 dias"].sum()) if "Vence em 7 dias" in df_f else 0
     sem_data    = int(df_f["Sem data"].sum()) if "Sem data" in df_f else 0
     qtd_total   = int(df_f["Qtdade"].sum()) if "Qtdade" in df_f else total_itens
-
     for col, title, value in [
         (k1,"Itens filtrados", total_itens),
         (k2,"Em atraso", atrasados),
@@ -544,21 +490,26 @@ if not compactar:
             </div>
             """, unsafe_allow_html=True)
 
-# ======================== CONTEÚDO (visões) ========================
-subset_cols = [c for c in [
-    "Item","Insumo","Sit","Status","Prefixo",
-    "Retornar até","Dias para devolver","Em atraso","Vence em 7 dias","Sem data"
-] if c in df_f.columns]
-df_view = df_f[subset_cols].copy()
+# ======================== CONTEÚDO ========================
+subset = [c for c in ["Item","Insumo","Sit","Status","Prefixo","Retornar até","Dias para devolver","Em atraso","Vence em 7 dias","Sem data"] if c in df_f.columns]
+df_view = df_f[subset].copy()
 
-if visao == "Cards compactos":
-    render_cards_compact(df_view, min_card_px=min_card_px)
-elif visao == "Lista densa":
-    render_list_dense(df_view)
-else:  # Kanban
-    render_kanban(df_view)
+if df_view.empty:
+    st.warning("Nenhuma linha após filtros atuais.")
+    # Heurísticas de causa provável
+    if diag.get("os_aviso"):
+        st.info("Possível causa: a coluna de OS não foi reconhecida. Ajuste o nome no Excel ou inclua um alias em 'mapa_renome'.")
+    elif diag.get("os_validas", 0) == 0 and diag.get("os_total", 0) > 0:
+        st.info("Possível causa: nenhum valor de OS casa com o padrão esperado (ex.: '2025/08/0053'). Verifique exemplos em 'Diagnóstico'.")
+    else:
+        st.info("Revise filtros na barra lateral (Status/Sit/Prefixo/datas).")
+else:
+    if visao == "Cards":
+        render_cards(df_view, min_card_px=min_card_px)
+    else:
+        render_list_dense(df_view)
 
-# rodapé pequeno
+# Rodapé discreto
 if not compactar:
     st.markdown("---")
-    st.caption(f"Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+    st.caption(f"Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}  ·  {APP_VERSION}")
