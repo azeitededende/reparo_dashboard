@@ -167,21 +167,6 @@ def limpar_status(valor: str) -> str:
     if has_po: return "P.O"
     return raw
 
-def normalizar_valores(df: pd.DataFrame) -> pd.DataFrame:
-    """Corrige 'pe?as'/'pe?cas'/'pecas' -> 'Peças' (mojibake)."""
-    out = df.copy()
-    def fix_pecas(s: object) -> object:
-        if pd.isna(s): return s
-        txt = str(s)
-        norm_letters = re.sub(r"[^a-zA-Z]+", "", _norm(txt)).lower()
-        if norm_letters in {"pecas", "peas"}:
-            return "Peças"
-        txt = re.sub(r"(?i)pe\?cas|pe\?as|pecas|peças", "Peças", txt)
-        return txt
-    if "Grupo" in out.columns:
-        out["Grupo"] = out["Grupo"].apply(fix_pecas)
-    return out
-
 # ======================== LOAD ========================
 @st.cache_data(show_spinner=False)
 def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
@@ -196,7 +181,7 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
     colunas_importantes = [
         "Status","Sit","Prefixo","Orç/OS","Item",
         "P/N Compras","P/N Removido","S/N Removido",
-        "Insumo","Grupo","Enviar até","Retornar até",
+        "Insumo","Enviar até","Retornar até",
         "Motivo","Condição","Qtdade"
     ]
     mapa_renome = {
@@ -248,8 +233,6 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
         df["Vence em 7 dias"] = False
         df["Sem data"] = True
 
-    # correções pontuais
-    df = normalizar_valores(df)
     return df
 
 # ======================== RENDER DE CARDS ========================
@@ -273,21 +256,26 @@ def render_cards(dfv: pd.DataFrame):
 
             # campos principais
             titulo = str(row.get("Prefixo","")) or "—"
-            sub    = str(row.get("Item","")) or str(row.get("Orç/OS","")) or "—"
+            # DESCRIÇÃO DA PEÇA: prioriza 'Insumo'; se ausente, usa 'Item'
+            descricao = str(row.get("Insumo", "")) or str(row.get("Item", "")) or "—"
+
             status_txt = str(row.get("Status","—"))
             sit_txt    = str(row.get("Sit","")).strip()
-            grupo_txt  = str(row.get("Grupo","")).strip()
             qtd_val    = row.get("Qtdade","")
             qtd_txt    = "" if pd.isna(qtd_val) else (str(int(qtd_val)) if str(qtd_val).isdigit() else str(qtd_val))
+
+            # P/N (se quiser exibir junto à descrição)
+            pn = str(row.get("P/N Compras","")).strip()
+            pn_badge = card_badge(f"P/N: {pn}", "gray") if pn else ""
 
             dt_ret = row.get("Retornar até", pd.NaT)
             dias   = row.get("Dias para devolver", None)
 
-            # badges
+            # badges (SEM GRUPO)
             b_status = card_badge(status_txt, "blue" if "P.O" in status_txt else ("red" if status_txt.lower().startswith("n") else "gray"))
             b_sit    = card_badge(f"Sit: {sit_txt}") if sit_txt else ""
-            b_grupo  = card_badge(f"Grupo: {grupo_txt}") if grupo_txt else ""
             b_qtd    = card_badge(f"Qtd: {qtd_txt}", "green") if qtd_txt not in ["", "0", "nan"] else ""
+
             if pd.notna(dt_ret):
                 when = dt_ret.strftime("%d/%m/%Y")
                 tone = "amber" if (isinstance(dias,(int,float,np.integer,np.floating)) and 0 <= dias <= 7) \
@@ -310,10 +298,10 @@ def render_cards(dfv: pd.DataFrame):
                     <div class="{card_cls}">
                       <div class="card-header">
                         <div class="card-title">{titulo}</div>
-                        <div class="card-sub">{sub}</div>
+                        <div class="card-sub">{descricao}</div>
                       </div>
                       <div class="card-row">
-                        {b_status}{b_sit}{b_grupo}{b_qtd}{prazo_badge}
+                        {b_status}{b_sit}{b_qtd}{prazo_badge}{pn_badge}
                       </div>
                       <div class="card-row">{prazo_txt}</div>
                     </div>
@@ -326,10 +314,10 @@ def render_cards(dfv: pd.DataFrame):
         for _, row in dfv.iterrows():
             st.write({
                 "Prefixo": row.get("Prefixo",""),
-                "Item": row.get("Item",""),
+                "Descrição": (row.get("Insumo","") or row.get("Item","")),
                 "Status": row.get("Status",""),
                 "Sit": row.get("Sit",""),
-                "Grupo": row.get("Grupo",""),
+                "P/N Compras": row.get("P/N Compras",""),
                 "Retornar até": row.get("Retornar até",""),
                 "Dias p/ devolver": row.get("Dias para devolver",""),
             })
@@ -355,7 +343,6 @@ vista = st.sidebar.radio(
 
 f_status  = st.sidebar.selectbox("Status", ["(Todos)"] + sorted(df["Status"].dropna().astype(str).unique()) if "Status" in df else ["(Todos)"])
 f_sit     = st.sidebar.selectbox("Situação (Sit)", ["(Todos)"] + sorted(df["Sit"].dropna().astype(str).unique()) if "Sit" in df else ["(Todos)"])
-f_grupo   = st.sidebar.selectbox("Grupo", ["(Todos)"] + sorted(df["Grupo"].dropna().astype(str).unique()) if "Grupo" in df else ["(Todos)"])
 f_prefixo = st.sidebar.text_input("Prefixo (contém)")
 busca     = st.sidebar.text_input("Busca livre (qualquer coluna)")
 
@@ -374,7 +361,7 @@ if habilitar_filtro_datas and "Retornar até" in df.columns:
 st.sidebar.markdown("---")
 ordem = st.sidebar.selectbox(
     "Ordenar por",
-    [c for c in ["Em atraso","Vence em 7 dias","Dias para devolver","Retornar até","Prefixo","Status","Sit","Grupo","Item","Qtdade"] if c in df.columns]
+    [c for c in ["Em atraso","Vence em 7 dias","Dias para devolver","Retornar até","Prefixo","Status","Sit","Item","Qtdade","Insumo"] if c in df.columns]
 )
 ordem_cresc = st.sidebar.toggle("Ordem crescente", value=False if ordem in ["Em atraso","Vence em 7 dias"] else True)
 
@@ -390,7 +377,6 @@ elif vista == "Sem data" and "Sem data" in df_f: df_f = df_f[df_f["Sem data"]]
 # filtros
 if f_status != "(Todos)" and "Status" in df_f: df_f = df_f[df_f["Status"].astype(str) == f_status]
 if f_sit    != "(Todos)" and "Sit" in df_f:    df_f = df_f[df_f["Sit"].astype(str) == f_sit]
-if f_grupo  != "(Todos)" and "Grupo" in df_f:  df_f = df_f[df_f["Grupo"].astype(str) == f_grupo]
 if f_prefixo and "Prefixo" in df_f:            df_f = df_f[df_f["Prefixo"].astype(str).str.contains(f_prefixo, case=False, na=False)]
 
 # busca livre
@@ -460,21 +446,17 @@ tab1, tab2 = st.tabs(["📋 Itens (cards)", "📊 Agrupamentos"])
 
 with tab1:
     cols_keep = [c for c in [
-        "Prefixo","Item","Orç/OS","Status","Sit","Grupo","Qtdade",
-        "Retornar até","Dias para devolver","Em atraso","Vence em 7 dias","Sem data"
+        "Prefixo","Item","Insumo","Orç/OS","Status","Sit","Qtdade",
+        "P/N Compras","Retornar até","Dias para devolver","Em atraso","Vence em 7 dias","Sem data"
     ] if c in df_f.columns]
     render_cards(df_f[cols_keep])
 
 with tab2:
-    cA, cB = st.columns(2)
+    cA, = st.columns(1)
     with cA:
         if "Status" in df_f.columns and not df_f.empty:
             st.subheader("Distribuição por Status")
             st.bar_chart(df_f["Status"].value_counts().sort_values(ascending=False))
-    with cB:
-        if "Grupo" in df_f.columns and not df_f.empty:
-            st.subheader("Distribuição por Grupo")
-            st.bar_chart(df_f["Grupo"].value_counts().sort_values(ascending=False))
     if "Sit" in df_f.columns and not df_f.empty:
         st.subheader("Distribuição por Sit")
         st.bar_chart(df_f["Sit"].value_counts().sort_values(ascending=False))
