@@ -18,47 +18,74 @@ st.set_page_config(
 
 BASE_CSS = """
 <style>
-/* limpeza */
+/* limpa ruídos */
 div[data-testid="stStatusWidget"], div[data-testid="stDecoration"] { visibility: hidden; height:0; }
 footer, #MainMenu { visibility: hidden; }
 .block-container { padding-top: .5rem; }
 h1, h2, h3 { letter-spacing: .2px; }
 
-/* badges */
-.badge { display:inline-block; padding:.25rem .55rem; border-radius:999px; font-size:.78rem; margin-right:.35rem; }
-.badge-gray { background:#f3f4f6; border:1px solid #e5e7eb; }
-.badge-blue { background:#e8f1ff; border:1px solid #c9ddff; }
-.badge-amber { background:#fff4d6; border:1px solid #ffe4a6; }
-.badge-red { background:#ffe6e3; border:1px solid #ffcdc6; }
-.badge-green { background:#e7f6ec; border:1px solid #c9e8d2; }
+/* ===== Paleta base dos componentes (compatível com tema escuro) ===== */
+:root {
+  --card-bg: #ffffff;        /* fundo claro p/ cards e kpis */
+  --card-fg: #111827;        /* texto escuro p/ garantir contraste */
+  --muted:   #6b7280;
+  --border:  #ececec;
 
-/* KPIs */
-.kpi { border:1px solid #eee; border-radius:12px; padding:14px 16px; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.05); }
-.kpi .kpi-title { font-size:.85rem; color:#6b7280; margin-bottom:.35rem; }
+  --badge-fg: #111827;
+  --badge-gray-bg:  #f3f4f6; --badge-gray-bd:  #e5e7eb;
+  --badge-blue-bg:  #e8f1ff; --badge-blue-bd:  #c9ddff;
+  --badge-amber-bg: #fff4d6; --badge-amber-bd: #ffe4a6;
+  --badge-red-bg:   #ffe6e3; --badge-red-bd:   #ffcdc6;
+  --badge-green-bg: #e7f6ec; --badge-green-bd: #c9e8d2;
+
+  --warn-bg: #fff9ea; --warn-bd: #ffe4a6;
+  --danger-bg:#ffeceb; --danger-bd:#ffcdc6;
+}
+
+/* cards e kpis com cor de texto forçada (resolve “texto branco em fundo branco”) */
+.kpi, .kpi * { color: var(--card-fg) !important; }
+.card, .card * { color: var(--card-fg) !important; }
+
+/* badges com texto escuro para manter leitura em tema dark */
+.badge { color: var(--badge-fg) !important; }
+
+/* ===== Badges ===== */
+.badge { display:inline-block; padding:.25rem .55rem; border-radius:999px; font-size:.78rem; margin-right:.35rem; }
+.badge-gray  { background:var(--badge-gray-bg);  border:1px solid var(--badge-gray-bd); }
+.badge-blue  { background:var(--badge-blue-bg);  border:1px solid var(--badge-blue-bd); }
+.badge-amber { background:var(--badge-amber-bg); border:1px solid var(--badge-amber-bd); }
+.badge-red   { background:var(--badge-red-bg);   border:1px solid var(--badge-red-bd); }
+.badge-green { background:var(--badge-green-bg); border:1px solid var(--badge-green-bd); }
+
+/* ===== KPIs ===== */
+.kpi {
+  border:1px solid var(--border); border-radius:12px; padding:14px 16px; background:var(--card-bg);
+  box-shadow:0 1px 2px rgba(0,0,0,.05);
+}
+.kpi .kpi-title { font-size:.85rem; color: var(--muted) !important; margin-bottom:.35rem; }
 .kpi .kpi-value { font-size:1.6rem; font-weight:700; }
 
-/* cards */
+/* ===== Cards ===== */
 .card {
-  border:1px solid #ececec; border-radius:14px; padding:14px; background:#fff;
-  box-shadow:0 1px 3px rgba(0,0,0,.06);
-  display:flex; flex-direction:column; gap:.5rem; height:100%;
+  border:1px solid var(--border); border-radius:14px; padding:14px; background:var(--card-bg);
+  box-shadow:0 1px 3px rgba(0,0,0,.06); display:flex; flex-direction:column; gap:.5rem; height:100%;
 }
 .card-header { display:flex; align-items:center; justify-content:space-between; gap:.5rem; }
 .card-title { font-weight:700; font-size:1.02rem; }
-.card-sub { color:#6b7280; font-size:.86rem; }
+.card-sub { color: var(--muted) !important; font-size:.86rem; }
 .card-row { display:flex; flex-wrap:wrap; gap:.35rem .5rem; align-items:center; }
-.card .muted { color:#6b7280; font-size:.82rem; }
-.card-danger { border-color:#ffcdc6; background:linear-gradient(0deg, #fff, #fff), #ffeceb; }
-.card-warn { border-color:#ffe4a6; background:linear-gradient(0deg, #fff, #fff), #fff9ea; }
+.card .muted { color: var(--muted) !important; font-size:.82rem; }
 
-/* chips de contexto */
+.card-danger { border-color: var(--danger-bd); background: linear-gradient(0deg, #fff, #fff), var(--danger-bg); }
+.card-warn   { border-color: var(--warn-bd);   background: linear-gradient(0deg, #fff, #fff), var(--warn-bg); }
+
+/* Chips de contexto e gráficos */
 .context { margin:.5rem 0 .75rem 0; }
 .small-muted { font-size: 0.85rem; opacity: 0.8; }
-
-/* contorno para charts */
-[data-testid="stVegaLiteChart"] { border-radius: 12px; overflow: hidden; border:1px solid #eee; }
+[data-testid="stVegaLiteChart"] { border-radius: 12px; overflow: hidden; border:1px solid var(--border); }
 </style>
 """
+
 st.markdown(BASE_CSS, unsafe_allow_html=True)
 
 # ======================== HELPERS ========================
@@ -440,3 +467,4 @@ with tab2:
 # ======================== RODAPÉ ========================
 st.markdown("---")
 st.caption("Dica: Cards priorizam leitura rápida; use as Vistas rápidas para alternar entre atrasados, próximos 7 dias e sem data.")
+
