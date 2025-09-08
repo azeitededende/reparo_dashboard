@@ -287,27 +287,23 @@ def render_cards(dfv: pd.DataFrame, cols_por_linha: int = 3):
             if row.get("Em atraso", False): card_cls = "card card-danger"
             elif row.get("Vence em 7 dias", False): card_cls = "card card-warn"
 
-            # campos principais
-            titulo = str(row.get("Prefixo","")) or "—"
-            descricao = str(row.get("Insumo","")) or str(row.get("Item","")) or "—"
+            # ===== CAMPOS EXIGIDOS =====
+            # Título: Número do Item
+            titulo   = (str(row.get("Item","")).strip() or "—")
+            # Subtítulo: Insumo (descrição)
+            insumo   = (str(row.get("Insumo","")).strip() or "—")
+            # Chips: Situação, Status e Prefixo
+            sit_txt  = str(row.get("Sit","")).strip()
+            status   = str(row.get("Status","")).strip()
+            prefixo  = str(row.get("Prefixo","")).strip()
 
-            status_txt = str(row.get("Status","—"))
-            sit_txt    = str(row.get("Sit","")).strip()
-            os_txt     = str(row.get("Orç/OS","")).strip()
-            qtd_val    = row.get("Qtdade","")
-            qtd_txt    = "" if pd.isna(qtd_val) else (str(int(qtd_val)) if str(qtd_val).isdigit() else str(qtd_val))
-            pn         = str(row.get("P/N Compras","")).strip()
+            b_sit     = card_badge(f"Situação: {sit_txt}") if sit_txt else ""
+            b_status  = card_badge(f"Status: {status}", "blue" if "P.O" in status else ("red" if status.lower().startswith("n") else "gray"))
+            b_prefixo = card_badge(f"Prefixo: {prefixo}") if prefixo else ""
 
+            # Prazo (se existir)
             dt_ret = row.get("Retornar até", pd.NaT)
             dias   = row.get("Dias para devolver", None)
-
-            # badges
-            b_os    = card_badge(f"OS: {os_txt}", "gray") if os_txt else ""
-            b_status= card_badge(status_txt, "blue" if "P.O" in status_txt else ("red" if status_txt.lower().startswith("n") else "gray"))
-            b_sit   = card_badge(f"Sit: {sit_txt}") if sit_txt else ""
-            b_qtd   = card_badge(f"Qtd: {qtd_txt}", "green") if qtd_txt not in ["", "0", "nan"] else ""
-            b_pn    = card_badge(f"P/N: {pn}", "gray") if pn else ""
-
             if pd.notna(dt_ret):
                 when = dt_ret.strftime("%d/%m/%Y")
                 tone = "amber" if (isinstance(dias,(int,float,np.integer,np.floating)) and 0 <= dias <= 7) \
@@ -316,7 +312,6 @@ def render_cards(dfv: pd.DataFrame, cols_por_linha: int = 3):
             else:
                 prazo_badge = card_badge("Sem data", "gray")
 
-            # contexto prazo
             prazo_txt = ""
             if isinstance(dias,(int,float,np.integer,np.floating)) and not pd.isna(dias):
                 d = int(dias)
@@ -330,10 +325,10 @@ def render_cards(dfv: pd.DataFrame, cols_por_linha: int = 3):
                     <div class="{card_cls}">
                       <div class="card-header">
                         <div class="card-title">{titulo}</div>
-                        <div class="card-sub">{descricao}</div>
+                        <div class="card-sub">{insumo}</div>
                       </div>
                       <div class="card-row">
-                        {b_os}{b_status}{b_sit}{b_qtd}{prazo_badge}{b_pn}
+                        {b_sit}{b_status}{b_prefixo}{prazo_badge}
                       </div>
                       <div class="card-row">{prazo_txt}</div>
                     </div>
@@ -345,12 +340,11 @@ def render_cards(dfv: pd.DataFrame, cols_por_linha: int = 3):
         st.error(f"Falha ao renderizar os cartões ({type(e).__name__}). Mostrando visão alternativa simples.")
         for _, row in dfv.iterrows():
             st.write({
-                "Prefixo": row.get("Prefixo",""),
-                "Descrição": (row.get("Insumo","") or row.get("Item","")),
-                "OS": row.get("Orç/OS",""),
+                "Item": row.get("Item",""),
+                "Insumo": row.get("Insumo",""),
+                "Situação": row.get("Sit",""),
                 "Status": row.get("Status",""),
-                "Sit": row.get("Sit",""),
-                "P/N Compras": row.get("P/N Compras",""),
+                "Prefixo": row.get("Prefixo",""),
                 "Retornar até": row.get("Retornar até",""),
                 "Dias p/ devolver": row.get("Dias para devolver",""),
             })
@@ -394,7 +388,8 @@ if habilitar_filtro_datas and "Retornar até" in df.columns:
 st.sidebar.markdown("---")
 ordem = st.sidebar.selectbox(
     "Ordenar por",
-    [c for c in ["Em atraso","Vence em 7 dias","Dias para devolver","Retornar até","Prefixo","Status","Sit","Item","Qtdade","Insumo","Orç/OS"] if c in df.columns]
+    [c for c in ["Em atraso","Vence em 7 dias","Dias para devolver","Retornar até",
+                 "Item","Insumo","Prefixo","Status","Sit","Qtdade","Orç/OS"] if c in df.columns]
 )
 ordem_cresc = st.sidebar.toggle("Ordem crescente", value=False if ordem in ["Em atraso","Vence em 7 dias"] else True)
 
@@ -479,8 +474,9 @@ tab1, tab2 = st.tabs(["📋 Itens (cards)", "📊 Agrupamentos"])
 
 with tab1:
     cols_keep = [c for c in [
-        "Prefixo","Item","Insumo","Orç/OS","Status","Sit","Qtdade",
-        "P/N Compras","Retornar até","Dias para devolver","Em atraso","Vence em 7 dias","Sem data"
+        # Apenas os campos pedidos + campos de prazo internos
+        "Item","Insumo","Sit","Status","Prefixo",
+        "Retornar até","Dias para devolver","Em atraso","Vence em 7 dias","Sem data"
     ] if c in df_f.columns]
     render_cards(df_f[cols_keep], cols_por_linha=3)
 
