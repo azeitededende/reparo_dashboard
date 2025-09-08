@@ -3,7 +3,6 @@ import re
 import unicodedata
 from datetime import datetime
 from io import BytesIO
-from importlib.util import find_spec
 
 import numpy as np
 import pandas as pd
@@ -19,24 +18,45 @@ st.set_page_config(
 
 BASE_CSS = """
 <style>
+/* limpeza */
 div[data-testid="stStatusWidget"], div[data-testid="stDecoration"] { visibility: hidden; height:0; }
 footer, #MainMenu { visibility: hidden; }
 .block-container { padding-top: .5rem; }
-
 h1, h2, h3 { letter-spacing: .2px; }
-.small-muted { font-size: 0.85rem; opacity: 0.8; }
 
-.badge { display:inline-block; padding:.25rem .5rem; border-radius:999px; font-size:.78rem; margin-right:.35rem; }
+/* badges */
+.badge { display:inline-block; padding:.25rem .55rem; border-radius:999px; font-size:.78rem; margin-right:.35rem; }
 .badge-gray { background:#f3f4f6; border:1px solid #e5e7eb; }
 .badge-blue { background:#e8f1ff; border:1px solid #c9ddff; }
 .badge-amber { background:#fff4d6; border:1px solid #ffe4a6; }
 .badge-red { background:#ffe6e3; border:1px solid #ffcdc6; }
+.badge-green { background:#e7f6ec; border:1px solid #c9e8d2; }
 
+/* KPIs */
 .kpi { border:1px solid #eee; border-radius:12px; padding:14px 16px; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.05); }
 .kpi .kpi-title { font-size:.85rem; color:#6b7280; margin-bottom:.35rem; }
 .kpi .kpi-value { font-size:1.6rem; font-weight:700; }
 
-[data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; border:1px solid #eee; }
+/* cards */
+.card {
+  border:1px solid #ececec; border-radius:14px; padding:14px; background:#fff;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);
+  display:flex; flex-direction:column; gap:.5rem; height:100%;
+}
+.card-header { display:flex; align-items:center; justify-content:space-between; gap:.5rem; }
+.card-title { font-weight:700; font-size:1.02rem; }
+.card-sub { color:#6b7280; font-size:.86rem; }
+.card-row { display:flex; flex-wrap:wrap; gap:.35rem .5rem; align-items:center; }
+.card .muted { color:#6b7280; font-size:.82rem; }
+.card-danger { border-color:#ffcdc6; background:linear-gradient(0deg, #fff, #fff), #ffeceb; }
+.card-warn { border-color:#ffe4a6; background:linear-gradient(0deg, #fff, #fff), #fff9ea; }
+
+/* chips de contexto */
+.context { margin:.5rem 0 .75rem 0; }
+.small-muted { font-size: 0.85rem; opacity: 0.8; }
+
+/* tabelas/gráficos contorno */
+[data-testid="stDataFrame"], [data-testid="stVegaLiteChart"] { border-radius: 12px; overflow: hidden; border:1px solid #eee; }
 </style>
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
@@ -60,16 +80,10 @@ def _choose_engine(path: str | BytesIO | None) -> str | None:
     return None
 
 def parse_mixed_dates(series: pd.Series) -> pd.Series:
-    """
-    Faz parse seguro de datas:
-      - ISO puro (YYYY-MM-DD) com format='%Y-%m-%d'
-      - Demais formatos com dayfirst=True
-    Evita o UserWarning de dayfirst em ISO.
-    """
+    """Parse seguro: ISO (YYYY-MM-DD) e demais com dayfirst=True, sem warnings."""
     s = series.astype(str).str.strip()
     idx = s.index
     out = pd.Series(pd.NaT, index=idx, dtype="datetime64[ns]")
-
     iso_mask = s.str.match(r"^\d{4}-\d{2}-\d{2}$")
     if iso_mask.any():
         out.loc[iso_mask] = pd.to_datetime(s.loc[iso_mask], format="%Y-%m-%d", errors="coerce")
@@ -77,12 +91,35 @@ def parse_mixed_dates(series: pd.Series) -> pd.Series:
         out.loc[~iso_mask] = pd.to_datetime(s.loc[~iso_mask], dayfirst=True, errors="coerce")
     return out
 
+def limpar_status(valor: str) -> str:
+    """
+    Regras de exibição do Status:
+      - Contém P.O (ou variações) + 'fechad' -> 'P.O Fechada'
+      - Contém P.O (ou variações) -> 'P.O'
+      - Contém 'não/nao/n?o comprado' -> 'Não comprado'
+      - Caso contrário, mantém original (sem trim/acento).
+    """
+    if pd.isna(valor):
+        return valor
+    raw = str(valor).strip()
+    n = _norm(raw).lower()
+    # normalizar padrões de PO: "p.o", "p o", "po"
+    has_po = bool(re.search(r"\b(?:p\s*\.?\s*o|po)\b", n))
+    closed = "fechad" in n
+    nao_comprado = ("nao comprad" in n) or ("não comprad" in raw.lower()) or ("n?o comprad" in raw.lower())
+    if nao_comprado:
+        return "Não comprado"
+    if has_po and closed:
+        return "P.O Fechada"
+    if has_po:
+        return "P.O"
+    return raw
+
 # ======================== LOAD ========================
 @st.cache_data(show_spinner=False)
 def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
-    """Lê xls/xlsx/xlsb, normaliza colunas, datas e cria derivadas de prazo."""
+    """Lê xls/xlsx/xlsb, normaliza colunas, datas e cria derivadas de prazo + status limpo."""
     engine = _choose_engine(path)
-
     # tenta aba padrão; se falhar, usa a 1ª
     try:
         df = pd.read_excel(path, sheet_name="Worksheet", engine=engine)
@@ -96,7 +133,6 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
         "Insumo","Grupo","Enviar até","Retornar até",
         "Motivo","Condição","Qtdade"
     ]
-
     mapa_renome = {
         "Or?/OS": "Orç/OS", "Orc/OS": "Orç/OS",
         "Enviar at?": "Enviar até", "Retornar at?": "Retornar até",
@@ -119,18 +155,20 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
     keep = [c for c in colunas_importantes if c in df.columns]
     df = df[keep].copy()
 
-    # datas (sem warnings)
+    # datas
     for col in ["Enviar até", "Retornar até"]:
         if col in df.columns:
             df[col] = parse_mixed_dates(df[col])
 
-    # textos
+    # textos, qtd
     for col in df.select_dtypes(include=["object"]).columns:
         df[col] = df[col].astype(str).str.strip()
-
-    # quantidade
     if "Qtdade" in df.columns:
         df["Qtdade"] = pd.to_numeric(df["Qtdade"], errors="coerce").fillna(0).astype(int)
+
+    # status limpo (substitui Status para exibição/filtragem)
+    if "Status" in df.columns:
+        df["Status"] = df["Status"].apply(limpar_status)
 
     # derivadas de prazo
     hoje = pd.Timestamp(datetime.now().date())
@@ -145,62 +183,78 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
         df["Vence em 7 dias"] = False
         df["Sem data"] = True
 
-    # export auxiliar (ignora erro)
-    try:
-        df.to_csv("reparo_atual_csv.csv", sep=";", index=False, encoding="utf-8")
-    except Exception:
-        pass
-
     return df
 
-def download_df(df: pd.DataFrame, filename: str = "reparos_filtrado.csv"):
-    buf = BytesIO()
-    df.to_csv(buf, index=False, sep=";", encoding="utf-8")
-    st.download_button("⬇️ Baixar CSV filtrado", buf.getvalue(), file_name=filename, mime="text/csv")
+# ======================== RENDER DE CARDS ========================
+def card_badge(texto: str, tone: str = "gray") -> str:
+    tone_cls = {"gray":"badge-gray", "blue":"badge-blue", "amber":"badge-amber", "red":"badge-red", "green":"badge-green"}.get(tone,"badge-gray")
+    return f'<span class="badge {tone_cls}">{texto}</span>'
 
-def download_excel(df: pd.DataFrame, filename: str = "reparos_filtrado.xlsx"):
-    """Exporta para Excel se openpyxl estiver disponível."""
-    if find_spec("openpyxl") is None:
-        return  # não mostra botão se não houver engine
-
-    buf = BytesIO()
-    try:
-        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Filtrado")
-        st.download_button(
-            "⬇️ Baixar Excel filtrado",
-            buf.getvalue(),
-            file_name=filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-    except Exception:
-        # silencia qualquer erro de writer no ambiente
-        pass
-
-# ======================== STYLER ========================
-def estilo_tabela(df: pd.DataFrame):
-    """Cores por linha (atraso, proximidade) + gradiente nos dias."""
-    sty = df.style
-
-    if "Dias para devolver" in df.columns:
-        serie = df["Dias para devolver"].astype("float")
-        vmin = np.nanmin(serie.values) if np.isfinite(serie.values).any() else 0.0
-        vmax = np.nanmax(serie.values) if np.isfinite(serie.values).any() else 0.0
-        sty = sty.background_gradient(
-            subset=["Dias para devolver"],
-            cmap="RdYlGn_r",
-            vmin=vmin, vmax=vmax
-        )
-
-    def highlight_row(row):
+def render_cards(dfv: pd.DataFrame):
+    """Renderiza itens em formato de cartões em grade responsiva (3 colunas)."""
+    if dfv.empty:
+        st.info("Nenhum item encontrado com os filtros atuais.")
+        return
+    cols = st.columns(3)  # grade de 3 colunas
+    i = 0
+    for _, row in dfv.iterrows():
+        # estilo do card pelo prazo
+        card_cls = ""
         if row.get("Em atraso", False):
-            return ["background-color: #ffe6e3"] * len(row)  # vermelho claro
-        if row.get("Vence em 7 dias", False):
-            return ["background-color: #fff4d6"] * len(row)  # amarelo claro
-        return [""] * len(row)
+            card_cls = "card card-danger"
+        elif row.get("Vence em 7 dias", False):
+            card_cls = "card card-warn"
+        else:
+            card_cls = "card"
 
-    sty = sty.apply(highlight_row, axis=1)
-    return sty
+        # campos principais
+        titulo = str(row.get("Prefixo", "")) or "—"
+        sub = str(row.get("Item", "")) or str(row.get("Orç/OS","")) or "—"
+        status_txt = str(row.get("Status","—"))
+        sit_txt = str(row.get("Sit","")).strip()
+        grupo_txt = str(row.get("Grupo","")).strip()
+        qtd_txt = str(row.get("Qtdade","")).strip() if "Qtdade" in row else ""
+        dt_ret = row.get("Retornar até", pd.NaT)
+        dias = row.get("Dias para devolver", None)
+
+        # badges
+        b_status = card_badge(status_txt, "blue" if "P.O" in status_txt else ("red" if status_txt.lower().startswith("n") else "gray"))
+        b_sit = card_badge(f"Sit: {sit_txt}") if sit_txt else ""
+        b_grupo = card_badge(f"Grupo: {grupo_txt}") if grupo_txt else ""
+        b_qtd = card_badge(f"Qtd: {qtd_txt}", "green") if qtd_txt not in ["", "0", "nan"] else ""
+        if pd.notna(dt_ret):
+            when = dt_ret.strftime("%d/%m/%Y")
+            prazo_badge = card_badge(f"Devolver: {when}", "amber" if (dias is not None and dias <= 7 and dias >= 0) else ("red" if dias is not None and dias < 0 else "gray"))
+        else:
+            prazo_badge = card_badge("Sem data", "gray")
+
+        # linha de contexto de prazo
+        prazo_txt = ""
+        if dias is not None and pd.notna(dias):
+            if dias < 0:
+                prazo_txt = f"<span class='muted'>Atrasado há {abs(int(dias))} dia(s)</span>"
+            elif dias == 0:
+                prazo_txt = "<span class='muted'>Vence hoje</span>"
+            else:
+                prazo_txt = f"<span class='muted'>Faltam {int(dias)} dia(s)</span>"
+
+        with cols[i % 3]:
+            st.markdown(
+                f"""
+                <div class="{card_cls}">
+                  <div class="card-header">
+                    <div class="card-title">{titulo}</div>
+                    <div class="card-sub">{sub}</div>
+                  </div>
+                  <div class="card-row">
+                    {b_status}{b_sit}{b_grupo}{b_qtd}{prazo_badge}
+                  </div>
+                  <div class="card-row">{prazo_txt}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        i += 1
 
 # ======================== SIDEBAR (FILTROS) ========================
 st.sidebar.title("📌 Filtros")
@@ -239,38 +293,32 @@ if habilitar_filtro_datas and "Retornar até" in df.columns:
     else:
         st.sidebar.info("Não há datas válidas em 'Retornar até'.")
 
-st.sidebar.markdown("---")
-colunas_mostrar = st.sidebar.multiselect(
-    "Colunas visíveis",
-    options=list(df.columns),
-    default=[c for c in ["Status","Sit","Prefixo","Orç/OS","Item","P/N Compras","Retornar até","Dias para devolver","Em atraso","Vence em 7 dias","Qtdade"] if c in df.columns]
-)
-
+# Ordenação (para cards)
 ordem = st.sidebar.selectbox(
     "Ordenar por",
     [c for c in ["Em atraso","Vence em 7 dias","Dias para devolver","Retornar até","Prefixo","Status","Sit","Grupo","Item","Qtdade"] if c in df.columns]
 )
 ordem_cresc = st.sidebar.toggle("Ordem crescente", value=False if ordem in ["Em atraso","Vence em 7 dias"] else True)
 
-st.sidebar.markdown("---")
-usar_estilo = st.sidebar.checkbox("Aplicar destaque visual na tabela", value=True)
-
 # ======================== FILTRAGEM ========================
 df_f = df.copy()
 
+# vistas rápidas
 if vista == "Atrasados" and "Em atraso" in df_f:
     df_f = df_f[df_f["Em atraso"]]
 elif vista == "Próx. 7 dias" and "Vence em 7 dias" in df_f:
     df_f = df_f[df_f["Vence em 7 dias"]]
 elif vista == "Sem data" and "Sem data" in df_f:
     df_f = df_f[df_f["Sem data"]]
-# "Todos os itens" não restringe por data
+# "Todos os itens": sem restrição por data
 
+# filtros
 if f_status != "(Todos)" and "Status" in df_f: df_f = df_f[df_f["Status"].astype(str) == f_status]
 if f_sit    != "(Todos)" and "Sit" in df_f:    df_f = df_f[df_f["Sit"].astype(str) == f_sit]
 if f_grupo  != "(Todos)" and "Grupo" in df_f:  df_f = df_f[df_f["Grupo"].astype(str) == f_grupo]
 if f_prefixo and "Prefixo" in df_f:            df_f = df_f[df_f["Prefixo"].astype(str).str.contains(f_prefixo, case=False, na=False)]
 
+# busca livre
 if busca:
     txt = busca.strip().lower()
     mask = pd.Series(False, index=df_f.index)
@@ -278,6 +326,7 @@ if busca:
         mask |= df_f[col].astype(str).str.lower().str.contains(txt, na=False)
     df_f = df_f[mask]
 
+# filtro por datas (opcional)
 if habilitar_filtro_datas and date_range and "Retornar até" in df_f and len(date_range) == 2:
     ini, fim = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1]) + pd.Timedelta(days=1)
     mask_data = (df_f["Retornar até"] >= ini) & (df_f["Retornar até"] < fim)
@@ -287,6 +336,7 @@ if habilitar_filtro_datas and date_range and "Retornar até" in df_f and len(dat
 elif not inclui_sem_data and "Retornar até" in df_f:
     df_f = df_f[~df_f["Retornar até"].isna()]
 
+# ordenação
 if ordem in df_f.columns:
     secund = "Retornar até" if ("Retornar até" in df_f.columns and ordem != "Retornar até") else None
     if secund:
@@ -321,7 +371,7 @@ for col, title, value in [
 
 st.markdown(
     f"""
-    <div style="margin:.5rem 0 .75rem 0;">
+    <div class="context">
       <span class="badge badge-blue">Vista: {vista}</span>
       <span class="badge badge-gray">Ordenado por: {ordem} {'↑' if ordem_cresc else '↓'}</span>
       <span class="badge badge-amber">{'Incluindo' if inclui_sem_data else 'Excluindo'} sem data</span>
@@ -333,84 +383,24 @@ st.markdown(
 st.markdown("---")
 
 # ======================== ABAS ========================
-tab1, tab2, tab3 = st.tabs(["📋 Itens", "📊 Agrupamentos", "📈 Tendências"])
+tab1, tab2 = st.tabs(["📋 Itens (cards)", "📊 Agrupamentos"])
 
-# --- Aba 1: Itens ---
 with tab1:
-    st.subheader("Lista de itens")
+    render_cards(df_f[[c for c in ["Prefixo","Item","Orç/OS","Status","Sit","Grupo","Qtdade","Retornar até","Dias para devolver","Em atraso","Vence em 7 dias","Sem data"] if c in df_f.columns]])
 
-    if not colunas_mostrar:
-        st.info("Selecione ao menos uma coluna para exibir nas opções da barra lateral.")
-    else:
-        mostrar = [c for c in colunas_mostrar if c in df_f.columns]
-        if not mostrar:
-            st.info("As colunas escolhidas não existem no resultado atual. Ajuste os filtros.")
-        else:
-            df_view = df_f[mostrar]
-            # Fallback automático se Styler der erro
-            try:
-                if usar_estilo:
-                    st.dataframe(estilo_tabela(df_view), width="stretch")
-                else:
-                    st.dataframe(df_view, width="stretch")
-            except Exception as e:
-                st.warning(f"Não foi possível aplicar o destaque visual ({type(e).__name__}). Exibindo tabela simples.")
-                st.dataframe(df_view, width="stretch")
-
-            c1, c2 = st.columns(2)
-            with c1:
-                download_df(df_view)
-            with c2:
-                download_excel(df_view)
-
-# --- Aba 2: Agrupamentos ---
 with tab2:
     cA, cB = st.columns(2)
     with cA:
         if "Status" in df_f.columns and not df_f.empty:
             st.subheader("Distribuição por Status")
-            st.bar_chart(df_f["Status"].value_counts().sort_values(ascending=False))
+            st.bar_chart(df_f["Status"].value_counts().sort_values(ascending=False), width="stretch")
     with cB:
         if "Grupo" in df_f.columns and not df_f.empty:
             st.subheader("Distribuição por Grupo")
-            st.bar_chart(df_f["Grupo"].value_counts().sort_values(ascending=False))
-
-    cC, cD = st.columns(2)
-    with cC:
-        if "Sit" in df_f.columns and not df_f.empty:
-            st.subheader("Distribuição por Sit")
-            st.bar_chart(df_f["Sit"].value_counts().sort_values(ascending=False))
-    with cD:
-        if all(c in df_f.columns for c in ["Prefixo","Sit"]) and not df_f.empty:
-            st.subheader("Prefixo × Sit (contagem)")
-            piv = pd.pivot_table(
-                df_f,
-                index="Prefixo",
-                columns="Sit",
-                values="Item" if "Item" in df_f.columns else "Prefixo",
-                aggfunc="count",
-                fill_value=0
-            )
-            st.dataframe(piv, width="stretch")
-
-# --- Aba 3: Tendências ---
-with tab3:
-    st.subheader("Acompanhamento de prazos")
-    if "Dias para devolver" in df_f.columns and not df_f.empty:
-        buckets = pd.cut(
-            df_f["Dias para devolver"],
-            bins=[-9999, -1, 0, 7, 30, 9999],
-            labels=["Atrasado","Hoje","≤7 dias","≤30 dias",">30 dias"]
-        )
-        cont = buckets.value_counts().reindex(["Atrasado","Hoje","≤7 dias","≤30 dias",">30 dias"]).fillna(0).astype(int)
-        st.bar_chart(cont)
-
-    if "Retornar até" in df_f.columns:
-        serie = df_f.dropna(subset=["Retornar até"]).groupby(df_f["Retornar até"].dt.date).size()
-        if not serie.empty:
-            st.line_chart(serie)
-        else:
-            st.info("Sem dados de 'Retornar até' para série temporal.")
+            st.bar_chart(df_f["Grupo"].value_counts().sort_values(ascending=False), width="stretch")
+    if "Sit" in df_f.columns and not df_f.empty:
+        st.subheader("Distribuição por Sit")
+        st.bar_chart(df_f["Sit"].value_counts().sort_values(ascending=False), width="stretch")
 
 # ======================== RODAPÉ ========================
 st.markdown("---")
