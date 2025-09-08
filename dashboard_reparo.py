@@ -264,18 +264,17 @@ def render_cards(dfv: pd.DataFrame):
             qtd_val    = row.get("Qtdade","")
             qtd_txt    = "" if pd.isna(qtd_val) else (str(int(qtd_val)) if str(qtd_val).isdigit() else str(qtd_val))
 
-            # P/N (se quiser exibir junto à descrição)
+            # P/N (opcional no chip)
             pn = str(row.get("P/N Compras","")).strip()
             pn_badge = card_badge(f"P/N: {pn}", "gray") if pn else ""
 
             dt_ret = row.get("Retornar até", pd.NaT)
             dias   = row.get("Dias para devolver", None)
 
-            # badges (SEM GRUPO)
+            # badges
             b_status = card_badge(status_txt, "blue" if "P.O" in status_txt else ("red" if status_txt.lower().startswith("n") else "gray"))
             b_sit    = card_badge(f"Sit: {sit_txt}") if sit_txt else ""
             b_qtd    = card_badge(f"Qtd: {qtd_txt}", "green") if qtd_txt not in ["", "0", "nan"] else ""
-
             if pd.notna(dt_ret):
                 when = dt_ret.strftime("%d/%m/%Y")
                 tone = "amber" if (isinstance(dias,(int,float,np.integer,np.floating)) and 0 <= dias <= 7) \
@@ -396,6 +395,15 @@ if habilitar_filtro_datas and date_range and "Retornar até" in df_f and len(dat
     df_f = df_f[mask_data]
 elif not inclui_sem_data and "Retornar até" in df_f:
     df_f = df_f[~df_f["Retornar até"].isna()]
+
+# ====== Filtro exigido: apenas OS no formato AAAA/MM/NNNN ======
+if "Orç/OS" in df_f.columns:
+    padrao_os = r"^\d{4}/\d{2}/\d{4}$"
+    df_f = df_f[df_f["Orç/OS"].astype(str).str.fullmatch(padrao_os, na=False)]
+
+# (Opcional) Manter apenas itens "em reparo" via coluna Sit, se existir:
+if "Sit" in df_f.columns:
+    df_f = df_f[df_f["Sit"].astype(str).str.contains(r"reparo", case=False, na=False)]
 
 # ordenação
 if ordem in df_f.columns:
