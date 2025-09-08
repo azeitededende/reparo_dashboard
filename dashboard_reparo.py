@@ -18,73 +18,114 @@ st.set_page_config(
 
 BASE_CSS = """
 <style>
-/* limpa ruídos */
+/* -------- resets leves -------- */
 div[data-testid="stStatusWidget"], div[data-testid="stDecoration"] { visibility: hidden; height:0; }
 footer, #MainMenu { visibility: hidden; }
-.block-container { padding-top: .5rem; }
-h1, h2, h3 { letter-spacing: .2px; }
+.block-container { padding-top: .6rem; }
 
-/* ===== Paleta base dos componentes (compatível com tema escuro) ===== */
-:root {
-  --card-bg: #ffffff;        /* fundo claro p/ cards e kpis */
-  --card-fg: #111827;        /* texto escuro p/ garantir contraste */
-  --muted:   #6b7280;
-  --border:  #ececec;
+/* -------- tipografia (↑ tamanhos) -------- */
+html, body { font-size: 1.06rem; }          /* ~6% maior */
+h1 { font-size: 2.0rem; letter-spacing:.2px; }
+h2 { font-size: 1.45rem; letter-spacing:.2px; }
+h3 { font-size: 1.18rem; letter-spacing:.2px; }
+.small-muted { font-size: .95rem; opacity: .85; }
+
+/* -------- paleta default (modo claro) -------- */
+:root{
+  --app-bg: #ffffff;
+  --text:   #111827;
+  --muted:  #6b7280;
+  --card-bg:#ffffff;
+  --card-fg:#111827;
+  --border: #e5e7eb;
 
   --badge-fg: #111827;
-  --badge-gray-bg:  #f3f4f6; --badge-gray-bd:  #e5e7eb;
-  --badge-blue-bg:  #e8f1ff; --badge-blue-bd:  #c9ddff;
-  --badge-amber-bg: #fff4d6; --badge-amber-bd: #ffe4a6;
-  --badge-red-bg:   #ffe6e3; --badge-red-bd:   #ffcdc6;
-  --badge-green-bg: #e7f6ec; --badge-green-bd: #c9e8d2;
+  --badge-gray-bg:#f3f4f6; --badge-gray-bd:#e5e7eb;
+  --badge-blue-bg:#e8f1ff; --badge-blue-bd:#c9ddff;
+  --badge-amber-bg:#fff4d6;--badge-amber-bd:#ffe4a6;
+  --badge-red-bg:#ffe6e3;  --badge-red-bd:#ffcdc6;
+  --badge-green-bg:#e7f6ec;--badge-green-bd:#c9e8d2;
 
-  --warn-bg: #fff9ea; --warn-bd: #ffe4a6;
+  --warn-bg:#fff9ea; --warn-bd:#ffe4a6;
   --danger-bg:#ffeceb; --danger-bd:#ffcdc6;
 }
 
-/* cards e kpis com cor de texto forçada (resolve “texto branco em fundo branco”) */
-.kpi, .kpi * { color: var(--card-fg) !important; }
-.card, .card * { color: var(--card-fg) !important; }
+/* -------- overrides para modo escuro do sistema -------- */
+@media (prefers-color-scheme: dark){
+  :root{
+    --app-bg:#000000;       /* fundo preto */
+    --text:  #f8fafc;       /* texto branco/quase */
+    --muted: #cbd5e1;
+    --card-bg:#0b0b0b;      /* preto quase puro p/ card */
+    --card-fg:#f8fafc;
+    --border:#232323;
 
-/* badges com texto escuro para manter leitura em tema dark */
-.badge { color: var(--badge-fg) !important; }
+    /* badges ajustadas p/ dark */
+    --badge-fg: #f8fafc;
+    --badge-gray-bg:#1f2937; --badge-gray-bd:#374151;
+    --badge-blue-bg:#0b254a; --badge-blue-bd:#1e3a8a;
+    --badge-amber-bg:#3a2a06;--badge-amber-bd:#a16207;
+    --badge-red-bg:#3b0f0f;  --badge-red-bd:#b91c1c;
+    --badge-green-bg:#0f2f1d;--badge-green-bd:#15803d;
 
-/* ===== Badges ===== */
-.badge { display:inline-block; padding:.25rem .55rem; border-radius:999px; font-size:.78rem; margin-right:.35rem; }
-.badge-gray  { background:var(--badge-gray-bg);  border:1px solid var(--badge-gray-bd); }
-.badge-blue  { background:var(--badge-blue-bg);  border:1px solid var(--badge-blue-bd); }
-.badge-amber { background:var(--badge-amber-bg); border:1px solid var(--badge-amber-bd); }
-.badge-red   { background:var(--badge-red-bg);   border:1px solid var(--badge-red-bd); }
-.badge-green { background:var(--badge-green-bg); border:1px solid var(--badge-green-bd); }
+    --warn-bg:#2a1f07;  --warn-bd:#a16207;
+    --danger-bg:#2a0f10;--danger-bd:#b91c1c;
+  }
 
-/* ===== KPIs ===== */
-.kpi {
-  border:1px solid var(--border); border-radius:12px; padding:14px 16px; background:var(--card-bg);
-  box-shadow:0 1px 2px rgba(0,0,0,.05);
+  /* aplica fundo preto e texto claro na área do app */
+  html, body, .stApp, [data-testid="stAppViewContainer"], .block-container{
+    background: var(--app-bg) !important;
+    color: var(--text) !important;
+  }
 }
-.kpi .kpi-title { font-size:.85rem; color: var(--muted) !important; margin-bottom:.35rem; }
-.kpi .kpi-value { font-size:1.6rem; font-weight:700; }
 
-/* ===== Cards ===== */
-.card {
-  border:1px solid var(--border); border-radius:14px; padding:14px; background:var(--card-bg);
-  box-shadow:0 1px 3px rgba(0,0,0,.06); display:flex; flex-direction:column; gap:.5rem; height:100%;
+/* -------- componentes -------- */
+
+/* KPIs (texto sempre visível) */
+.kpi, .kpi *{ color: var(--card-fg) !important; }
+.kpi{
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:16px 18px;
+  background:var(--card-bg);
+  box-shadow:0 1px 2px rgba(0,0,0,.12);
 }
-.card-header { display:flex; align-items:center; justify-content:space-between; gap:.5rem; }
-.card-title { font-weight:700; font-size:1.02rem; }
-.card-sub { color: var(--muted) !important; font-size:.86rem; }
-.card-row { display:flex; flex-wrap:wrap; gap:.35rem .5rem; align-items:center; }
-.card .muted { color: var(--muted) !important; font-size:.82rem; }
+.kpi .kpi-title{ font-size:.95rem; color:var(--muted) !important; margin-bottom:.35rem; }
+.kpi .kpi-value{ font-size:1.9rem; font-weight:800; }
 
-.card-danger { border-color: var(--danger-bd); background: linear-gradient(0deg, #fff, #fff), var(--danger-bg); }
-.card-warn   { border-color: var(--warn-bd);   background: linear-gradient(0deg, #fff, #fff), var(--warn-bg); }
+/* Badges (chips) */
+.badge{
+  display:inline-block; padding:.32rem .7rem; border-radius:999px;
+  font-size:.92rem; font-weight:600; margin-right:.4rem;
+  color: var(--badge-fg) !important;
+}
+.badge-gray { background:var(--badge-gray-bg); border:1px solid var(--badge-gray-bd); }
+.badge-blue { background:var(--badge-blue-bg); border:1px solid var(--badge-blue-bd); }
+.badge-amber{ background:var(--badge-amber-bg);border:1px solid var(--badge-amber-bd); }
+.badge-red  { background:var(--badge-red-bg);  border:1px solid var(--badge-red-bd); }
+.badge-green{ background:var(--badge-green-bg);border:1px solid var(--badge-green-bd); }
 
-/* Chips de contexto e gráficos */
-.context { margin:.5rem 0 .75rem 0; }
-.small-muted { font-size: 0.85rem; opacity: 0.8; }
-[data-testid="stVegaLiteChart"] { border-radius: 12px; overflow: hidden; border:1px solid var(--border); }
+/* Cards (lista de itens) */
+.card, .card *{ color: var(--card-fg) !important; }
+.card{
+  border:1px solid var(--border); border-radius:16px; padding:16px; background:var(--card-bg);
+  box-shadow:0 1px 3px rgba(0,0,0,.18);
+  display:flex; flex-direction:column; gap:.6rem; height:100%;
+}
+.card-header{ display:flex; align-items:center; justify-content:space-between; gap:.5rem; }
+.card-title{ font-weight:800; font-size:1.12rem; letter-spacing:.2px; }
+.card-sub{ color:var(--muted) !important; font-size:.98rem; }
+.card-row{ display:flex; flex-wrap:wrap; gap:.45rem .6rem; align-items:center; }
+.card .muted{ color:var(--muted) !important; font-size:.95rem; }
+
+.card-danger{ border-color: var(--danger-bd); background: linear-gradient(0deg, var(--card-bg), var(--card-bg)), var(--danger-bg); }
+.card-warn  { border-color: var(--warn-bd);   background: linear-gradient(0deg, var(--card-bg), var(--card-bg)), var(--warn-bg); }
+
+/* Gráficos com moldura */
+[data-testid="stVegaLiteChart"]{ border-radius: 12px; overflow: hidden; border:1px solid var(--border); }
 </style>
 """
+
 
 st.markdown(BASE_CSS, unsafe_allow_html=True)
 
@@ -475,5 +516,6 @@ with tab2:
 # ======================== RODAPÉ ========================
 st.markdown("---")
 st.caption("Dica: Cards priorizam leitura rápida; use as Vistas rápidas para alternar entre atrasados, próximos 7 dias e sem data.")
+
 
 
