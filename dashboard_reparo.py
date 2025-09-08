@@ -142,18 +142,26 @@ def limpar_status(valor: str) -> str:
     return raw
 
 def normalizar_valores(df: pd.DataFrame) -> pd.DataFrame:
-    """Correções pontuais de mojibake sem mexer no resto dos textos."""
+    """Correções pontuais de mojibake (ex.: 'pe?as', 'pecas' -> 'Peças')."""
     out = df.copy()
-    # Normaliza Grupo -> 'Peças' quando vier 'pe?cas' ou 'pecas'
-    if "Grupo" in out.columns:
-        def fix_grupo(x):
-            if pd.isna(x): return x
-            s = str(x)
-            if re.search(r"\bpe\?cas\b", s, flags=re.IGNORECASE) or re.search(r"\bpecas\b", _norm(s), flags=re.IGNORECASE):
-                return "Peças"
+
+    def fix_pecas(s: object) -> object:
+        if pd.isna(s):
             return s
-        out["Grupo"] = out["Grupo"].apply(fix_grupo)
+        txt = str(s)
+        # forma normalizada só com letras p/ casar variações (pe?as -> peas, pecas -> pecas)
+        norm_letters = re.sub(r"[^a-zA-Z]+", "", _norm(txt)).lower()
+        if norm_letters in {"pecas", "peas"}:
+            return "Peças"
+        # também troca ocorrências embutidas dentro do texto
+        txt = re.sub(r"(?i)pe\?cas|pe\?as|pecas|peças", "Peças", txt)
+        return txt
+
+    if "Grupo" in out.columns:
+        out["Grupo"] = out["Grupo"].apply(fix_pecas)
+
     return out
+
 
 # ======================== LOAD ========================
 @st.cache_data(show_spinner=False)
@@ -467,4 +475,5 @@ with tab2:
 # ======================== RODAPÉ ========================
 st.markdown("---")
 st.caption("Dica: Cards priorizam leitura rápida; use as Vistas rápidas para alternar entre atrasados, próximos 7 dias e sem data.")
+
 
