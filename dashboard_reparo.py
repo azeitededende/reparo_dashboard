@@ -305,7 +305,7 @@ def render_cards(dfv: pd.DataFrame, cols_por_linha: int = 3):
                 when = dt_ret.strftime("%d/%m/%Y")
                 tone = "amber" if (isinstance(dias,(int,float,np.integer,np.floating)) and 0 <= dias <= 7) \
                        else ("red" if isinstance(dias,(int,float,np.integer,np.floating)) and dias < 0 else "gray")
-                prazo_badge = card_badge(f"Devolver: {when}", tone)
+                prazo_badge = card_badge(f"Retornar até: {when}", tone)
             else:
                 prazo_badge = card_badge("Sem data", "gray")
 
@@ -488,3 +488,4 @@ with tab2:
     if "Sit" in df_f.columns and not df_f.empty:
         st.subheader("Distribuição por Sit")
         st.bar_chart(df_f["Sit"].value_counts().sort_values(ascending=False))
+
