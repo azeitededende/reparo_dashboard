@@ -2,6 +2,7 @@
 import os
 import re
 import unicodedata
+import hashlib
 from datetime import datetime
 from io import BytesIO
 
@@ -104,6 +105,9 @@ h3 { font-size: 1.18rem; letter-spacing:.2px; }
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
 
+# ======================== TUNABLES (performance/UI) ========================
+MAX_CARDS_RENDER = 1000  # limite de cartões renderizados por performance
+
 # ======================== SNAPSHOT CONFIG ========================
 SNAP_PATH = "data/_ultimo_snapshot.parquet"
 _snapshot_dir = os.path.dirname(SNAP_PATH)
@@ -117,25 +121,34 @@ def _norm(s: str) -> str:
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     return re.sub(r"\s+", " ", s).strip()
 
-
-def _choose_engine(path: str | BytesIO | None) -> str | None:
+def _choose_engine(path: str | BytesIO | None) -> tuple[str | None, dict]:
+    """Choose Excel engine + engine_kwargs tuned for speed."""
+    engine_kwargs = {}
     if isinstance(path, str):
         low = path.lower()
         if low.endswith(".xlsb"):
-            return "pyxlsb"
+            return "pyxlsb", {}
         if low.endswith(".xlsx"):
-            return "openpyxl"
+            return "openpyxl", {"read_only": True, "data_only": True}
         if low.endswith(".xls"):
-            return "xlrd"
-    return None
+            return "xlrd", {}
+    return None, {}
 
+def _file_cache_key(path: str | BytesIO) -> str:
+    """Stable cache key: if upload -> md5(bytes); if path -> size+mtime."""
+    if isinstance(path, BytesIO):
+        data = path.getvalue()
+        return hashlib.md5(data).hexdigest()
+    if isinstance(path, str) and os.path.exists(path):
+        st_ = os.stat(path)
+        return f"{os.path.abspath(path)}::{st_.st_size}::{int(st_.st_mtime)}"
+    return str(path)
 
 def parse_mixed_dates(series: pd.Series) -> pd.Series:
     """ISO (YYYY-MM-DD) com format + demais com dayfirst=True (sem warnings)."""
     s = series.astype(str).str.strip()
     idx = s.index
     out = pd.Series(pd.NaT, index=idx, dtype="datetime64[ns]")
-
     iso_mask = s.str.match(r"^\d{4}-\d{2}-\d{2}$")
     if iso_mask.any():
         out.loc[iso_mask] = pd.to_datetime(s.loc[iso_mask], format="%Y-%m-%d", errors="coerce")
@@ -143,15 +156,7 @@ def parse_mixed_dates(series: pd.Series) -> pd.Series:
         out.loc[~iso_mask] = pd.to_datetime(s.loc[~iso_mask], dayfirst=True, errors="coerce")
     return out
 
-
 def limpar_status(valor: str) -> str:
-    """
-    Exibição do Status:
-      - PO/P.O + 'fechad' -> 'P.O Fechada'
-      - PO/P.O -> 'P.O'
-      - 'não/nao/n?o comprad' -> 'Não comprado'
-      - senão, mantém
-    """
     if pd.isna(valor):
         return valor
     raw = str(valor).strip()
@@ -167,21 +172,14 @@ def limpar_status(valor: str) -> str:
         return "P.O"
     return raw
 
-
 def normalizar_os(val) -> str | None:
-    """
-    Aceita variações de OS como: 2025/08/0053, 2025-8-53, ' 2025 / 08 / 53 '
-    e normaliza para 'YYYY/MM/NNNN'. Retorna None se não for um formato válido.
-    """
     if pd.isna(val):
         return None
     s = str(val).strip()
     m = re.match(r"^\s*(\d{4})\s*[/-]\s*(\d{1,2})\s*[/-]\s*(\d{3,5})\s*$", s)
     if not m:
         return None
-    ano = int(m.group(1))
-    mes = int(m.group(2))
-    seq = m.group(3)
+    ano = int(m.group(1)); mes = int(m.group(2)); seq = m.group(3)
     if not (1 <= mes <= 12):
         return None
     try:
@@ -190,17 +188,24 @@ def normalizar_os(val) -> str | None:
         return None
     return f"{ano:04d}/{mes:02d}/{seq_int:04d}"
 
-
 # ======================== LOAD ========================
 @st.cache_data(show_spinner=False)
-def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
+def carregar_dados_cached(path: str | BytesIO, cache_key: str) -> pd.DataFrame:
+    """Wrapper para cachear por cache_key estável (conteúdo/mtime)."""
+    return _carregar_dados_impl(path)
+
+def _carregar_dados_impl(path: str | BytesIO) -> pd.DataFrame:
     """Lê xls/xlsx/xlsb, normaliza colunas, datas, status e prazos."""
-    engine = _choose_engine(path)
+    engine, engine_kwargs = _choose_engine(path)
+    dtype_backend = "pyarrow"  # melhora memória/velocidade no pandas 2.x
     try:
-        df = pd.read_excel(path, sheet_name="Worksheet", engine=engine)
+        df = pd.read_excel(
+            path, sheet_name="Worksheet", engine=engine, engine_kwargs=engine_kwargs,
+            dtype_backend=dtype_backend
+        )
     except Exception:
-        xls = pd.ExcelFile(path, engine=engine)
-        df = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+        xls = pd.ExcelFile(path, engine=engine, engine_kwargs=engine_kwargs)
+        df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], dtype_backend=dtype_backend)
 
     colunas_importantes = [
         "Status","Sit","Prefixo","Orç/OS","Item",
@@ -209,7 +214,6 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
         "Motivo","Condição","Qtdade"
     ]
 
-    # renomes comuns por encoding
     mapa_renome = {
         "Or?/OS":"Orç/OS","Orc/OS":"Orç/OS",
         "Enviar at?":"Enviar até","Retornar at?":"Retornar até",
@@ -217,7 +221,6 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
     }
     df = df.rename(columns=mapa_renome)
 
-    # aproxima por nomes normalizados
     norm_cols = {c: _norm(c) for c in df.columns}
     alvo_norm = {a: _norm(a) for a in colunas_importantes}
     ren_extra = {}
@@ -231,23 +234,21 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
     keep = [c for c in colunas_importantes if c in df.columns]
     df = df[keep].copy()
 
-    # datas
     for col in ["Enviar até","Retornar até"]:
         if col in df.columns:
             df[col] = parse_mixed_dates(df[col])
 
-    # textos e qtd
-    for col in df.select_dtypes(include=["object"]).columns:
+    # Evita .astype(str) em tudo: só colunas de texto
+    obj_cols = list(df.select_dtypes(include=["object", "string[pyarrow]"]).columns)
+    for col in obj_cols:
         df[col] = df[col].astype(str).str.strip()
 
     if "Qtdade" in df.columns:
-        df["Qtdade"] = pd.to_numeric(df["Qtdade"], errors="coerce").fillna(0).astype(int)
+        df["Qtdade"] = pd.to_numeric(df["Qtdade"], errors="coerce").fillna(0).astype("int64[pyarrow]")
 
-    # status limpo
     if "Status" in df.columns:
         df["Status"] = df["Status"].apply(limpar_status)
 
-    # prazos
     hoje = pd.Timestamp(datetime.now().date())
     if "Retornar até" in df.columns:
         df["Dias para devolver"] = (df["Retornar até"] - hoje).dt.days
@@ -260,7 +261,6 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
         df["Vence em 7 dias"] = False
         df["Sem data"] = True
 
-    # OS normalizada (mantém só OS válidas)
     if "Orç/OS" in df.columns:
         df["__OS_norm"] = df["Orç/OS"].map(normalizar_os)
         df = df[df["__OS_norm"].notna()].copy()
@@ -269,29 +269,19 @@ def carregar_dados(path: str | BytesIO) -> pd.DataFrame:
 
     return df
 
-
 # ======================== SNAPSHOT + DIFF HELPERS ========================
 def _chave_itens(df: pd.DataFrame) -> pd.Series:
-    """
-    Gera uma chave estável para identificar itens entre execuções.
-    Ajuste a lista de colunas conforme a sua realidade.
-    """
     candidatos = [c for c in ["Orç/OS", "Item", "P/N Removido", "S/N Removido", "Prefixo"] if c in df.columns]
     if not candidatos:
-        # Fallback: usa o índice atual (não ideal, mas evita quebrar)
         return df.index.astype(str)
     return df[candidatos].astype(str).agg(" | ".join, axis=1)
 
-
 def salvar_snapshot(df: pd.DataFrame) -> None:
-    cols = [c for c in df.columns if not c.startswith("__")]  # evita colunas técnicas
+    cols = [c for c in df.columns if not c.startswith("__")]
     try:
         df[cols].to_parquet(SNAP_PATH, index=False)
     except Exception:
-        # caso seu ambiente não tenha parquet, salve como CSV
-        csv_fallback = SNAP_PATH.replace(".parquet", ".csv")
-        df[cols].to_csv(csv_fallback, index=False)
-
+        df[cols].to_csv(SNAP_PATH.replace(".parquet", ".csv"), index=False)
 
 def carregar_snapshot() -> pd.DataFrame | None:
     if os.path.exists(SNAP_PATH):
@@ -303,95 +293,67 @@ def carregar_snapshot() -> pd.DataFrame | None:
                 return pd.read_csv(csv_path)
     return None
 
-
-def calcular_diferencas(
-    df_atual: pd.DataFrame,
-    df_antigo: pd.DataFrame
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Retorna (adicionados, removidos, alterados_por_campo)
-      - 'adicionados' e 'removidos' são linhas inteiras
-      - 'alterados_por_campo' é um DF com col/old/new por chave
-    """
+def calcular_diferencas(df_atual: pd.DataFrame, df_antigo: pd.DataFrame):
     a = df_atual.copy()
     b = df_antigo.copy()
-
     a["__key"] = _chave_itens(a)
     b["__key"] = _chave_itens(b)
-
     comparar_cols = sorted(set(a.columns).intersection(b.columns) - {"__key"})
-
-    # adicionados / removidos
     adicionados = a[~a["__key"].isin(b["__key"])].drop(columns=["__key"], errors="ignore")
     removidos  = b[~b["__key"].isin(a["__key"])].drop(columns=["__key"], errors="ignore")
-
-    # alterados: apenas chaves em comum
     a_comum = a[a["__key"].isin(b["__key"])][["__key"] + comparar_cols]
     b_comum = b[b["__key"].isin(a["__key"])][["__key"] + comparar_cols]
-
     m = a_comum.merge(b_comum, on="__key", suffixes=("_new", "_old"))
-
     diffs = []
     for col in comparar_cols:
-        left = f"{col}_new"
-        right = f"{col}_old"
+        left = f"{col}_new"; right = f"{col}_old"
         mask = m[left].astype(str).fillna("") != m[right].astype(str).fillna("")
         if mask.any():
-            chunk = pd.DataFrame({
+            diffs.append(pd.DataFrame({
                 "Chave": m.loc[mask, "__key"].values,
                 "Coluna": col,
                 "Valor antigo": m.loc[mask, right].values,
                 "Valor novo": m.loc[mask, left].values,
-            })
-            diffs.append(chunk)
-
-    alterados = pd.concat(diffs, ignore_index=True) if diffs else pd.DataFrame(
-        columns=["Chave","Coluna","Valor antigo","Valor novo"]
-    )
+            }))
+    alterados = pd.concat(diffs, ignore_index=True) if diffs else pd.DataFrame(columns=["Chave","Coluna","Valor antigo","Valor novo"])
     return adicionados, removidos, alterados
-
 
 # ======================== RENDER DE CARDS ========================
 def card_badge(texto: str, tone: str = "gray") -> str:
-    tone_cls = {
-        "gray":"badge-gray","blue":"badge-blue","amber":"badge-amber","red":"badge-red","green":"badge-green"
-    }.get(tone,"badge-gray")
+    tone_cls = {"gray":"badge-gray","blue":"badge-blue","amber":"badge-amber","red":"badge-red","green":"badge-green"}.get(tone,"badge-gray")
     return f'<span class="badge {tone_cls}">{texto}</span>'
 
-
 def render_cards(dfv: pd.DataFrame, cols_por_linha: int = 3):
-    """Renderiza itens como cartões; fallback evita 'tela branca'."""
     if dfv.empty:
         st.info("Nenhum item encontrado com os filtros atuais.")
         return
+    # Limita quantidade renderizada (performance)
+    n = len(dfv)
+    if n > MAX_CARDS_RENDER:
+        st.warning(f"Mostrando apenas os primeiros {MAX_CARDS_RENDER} de {n} itens para melhor desempenho.")
+        dfv = dfv.head(MAX_CARDS_RENDER)
 
     cols_por_linha = max(2, min(int(cols_por_linha), 6))
     try:
         cols = st.columns(cols_por_linha)
         i = 0
         for _, row in dfv.iterrows():
-            # estilo do card pelo prazo
             card_cls = "card"
             if row.get("Em atraso", False):
                 card_cls = "card card-danger"
             elif row.get("Vence em 7 dias", False):
                 card_cls = "card card-warn"
-
-            # ===== CAMPOS EXIGIDOS =====
-            titulo = (str(row.get("Item","")).strip() or "—")  # Título: Número do Item
-            insumo = (str(row.get("Insumo","")).strip() or "—") # Subtítulo: Insumo (descrição)
+            titulo = (str(row.get("Item","")).strip() or "—")
+            insumo = (str(row.get("Insumo","")).strip() or "—")
             sit_txt = str(row.get("Sit","")).strip()
             status = str(row.get("Status","")).strip()
             prefixo = str(row.get("Prefixo","")).strip()
-
             b_sit = card_badge(f"Situação: {sit_txt}") if sit_txt else ""
             b_status = card_badge(
                 f"Status: {status}",
                 "blue" if "P.O" in status else ("red" if status.lower().startswith("n") else "gray")
             ) if status else ""
             b_prefixo = card_badge(f"Prefixo: {prefixo}") if prefixo else ""
-
-            # Prazo (se existir)
             dt_ret = row.get("Retornar até", pd.NaT)
             dias = row.get("Dias para devolver", None)
             if pd.notna(dt_ret):
@@ -401,17 +363,12 @@ def render_cards(dfv: pd.DataFrame, cols_por_linha: int = 3):
                 prazo_badge = card_badge(f"Retornar até: {when}", tone)
             else:
                 prazo_badge = card_badge("Sem data", "gray")
-
             prazo_txt = ""
             if isinstance(dias,(int,float,np.integer,np.floating)) and not pd.isna(dias):
                 d = int(dias)
-                if d < 0:
-                    prazo_txt = f"<span class='muted'>Atrasado há {abs(d)} dia(s)</span>"
-                elif d == 0:
-                    prazo_txt = "<span class='muted'>Vence hoje</span>"
-                else:
-                    prazo_txt = f"<span class='muted'>Faltam {d} dia(s)</span>"
-
+                if d < 0:   prazo_txt = f"<span class='muted'>Atrasado há {abs(d)} dia(s)</span>"
+                elif d==0:  prazo_txt = "<span class='muted'>Vence hoje</span>"
+                else:       prazo_txt = f"<span class='muted'>Faltam {d} dia(s)</span>"
             with cols[i % cols_por_linha]:
                 st.markdown(
                     f"""
@@ -422,16 +379,13 @@ def render_cards(dfv: pd.DataFrame, cols_por_linha: int = 3):
                           <div class="card-sub">{insumo}</div>
                         </div>
                       </div>
-                      <div class="card-row">
-                        {b_sit}{b_status}{b_prefixo}{prazo_badge}
-                      </div>
+                      <div class="card-row">{b_sit}{b_status}{b_prefixo}{prazo_badge}</div>
                       <div class="card-row">{prazo_txt}</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
             i += 1
-
     except Exception as e:
         st.error(f"Falha ao renderizar os cartões ({type(e).__name__}). Mostrando visão alternativa simples.")
         for _, row in dfv.iterrows():
@@ -445,10 +399,8 @@ def render_cards(dfv: pd.DataFrame, cols_por_linha: int = 3):
                 "Dias p/ devolver": row.get("Dias para devolver",""),
             })
 
-
 # ======================== SIDEBAR (FILTROS) ========================
 st.sidebar.title("📌 Filtros")
-
 with st.sidebar.expander("Fonte de dados", expanded=True):
     up = st.file_uploader("Enviar arquivo (.xlsx/.xls/.xlsb)", type=["xlsx","xls","xlsb"])
     if up is not None:
@@ -456,23 +408,13 @@ with st.sidebar.expander("Fonte de dados", expanded=True):
     else:
         path = st.text_input("Ou caminho local do Excel", value="reparo_atual.xlsx")
 
-df = carregar_dados(path)
+cache_key = _file_cache_key(path)
+df = carregar_dados_cached(path, cache_key)
 
 st.sidebar.markdown("### Vistas rápidas")
-vista = st.sidebar.radio(
-    label="Seleção",
-    options=["Todos os itens", "Atrasados", "Próx. 7 dias", "Sem data"],
-    index=0,
-)
-
-f_status = st.sidebar.selectbox(
-    "Status",
-    ["(Todos)"] + sorted(df["Status"].dropna().astype(str).unique()) if "Status" in df else ["(Todos)"]
-)
-f_sit = st.sidebar.selectbox(
-    "Situação (Sit)",
-    ["(Todos)"] + sorted(df["Sit"].dropna().astype(str).unique()) if "Sit" in df else ["(Todos)"]
-)
+vista = st.sidebar.radio("Seleção", ["Todos os itens", "Atrasados", "Próx. 7 dias", "Sem data"], index=0)
+f_status = st.sidebar.selectbox("Status", ["(Todos)"] + sorted(df["Status"].dropna().astype(str).unique()) if "Status" in df else ["(Todos)"])
+f_sit = st.sidebar.selectbox("Situação (Sit)", ["(Todos)"] + sorted(df["Sit"].dropna().astype(str).unique()) if "Sit" in df else ["(Todos)"])
 f_prefixo = st.sidebar.text_input("Prefixo (contém)")
 busca = st.sidebar.text_input("Busca livre (qualquer coluna)")
 
@@ -484,36 +426,27 @@ date_range = None
 if habilitar_filtro_datas and "Retornar até" in df.columns:
     min_d, max_d = df["Retornar até"].min(), df["Retornar até"].max()
     if pd.notna(min_d) and pd.notna(max_d):
-        date_range = st.sidebar.date_input(
-            "Janela de 'Retornar até'",
-            value=(min_d.date(), max_d.date())
-        )
+        date_range = st.sidebar.date_input("Janela de 'Retornar até'", value=(min_d.date(), max_d.date()))
     else:
         st.sidebar.info("Não há datas válidas em 'Retornar até'.")
 
 st.sidebar.markdown("---")
 ordem = st.sidebar.selectbox(
     "Ordenar por",
-    [c for c in [
-        "Em atraso","Vence em 7 dias","Dias para devolver","Retornar até",
-        "Item","Insumo","Prefixo","Status","Sit","Qtdade","Orç/OS"
-    ] if c in df.columns]
+    [c for c in ["Em atraso","Vence em 7 dias","Dias para devolver","Retornar até","Item","Insumo","Prefixo","Status","Sit","Qtdade","Orç/OS"] if c in df.columns]
 )
 ordem_cresc = st.sidebar.toggle("Ordem crescente", value=False if ordem in ["Em atraso","Vence em 7 dias"] else True)
 
 # ======================== FILTRAGEM ========================
 df_f = df.copy()
 
-# vistas rápidas
 if vista == "Atrasados" and "Em atraso" in df_f:
     df_f = df_f[df_f["Em atraso"]]
 elif vista == "Próx. 7 dias" and "Vence em 7 dias" in df_f:
     df_f = df_f[df_f["Vence em 7 dias"]]
 elif vista == "Sem data" and "Sem data" in df_f:
     df_f = df_f[df_f["Sem data"]]
-# "Todos os itens": sem restrição por data
 
-# filtros básicos
 if f_status != "(Todos)" and "Status" in df_f:
     df_f = df_f[df_f["Status"].astype(str) == f_status]
 if f_sit != "(Todos)" and "Sit" in df_f:
@@ -521,15 +454,15 @@ if f_sit != "(Todos)" and "Sit" in df_f:
 if f_prefixo and "Prefixo" in df_f:
     df_f = df_f[df_f["Prefixo"].astype(str).str.contains(f_prefixo, case=False, na=False)]
 
-# busca livre
+# busca livre (rápida): cria um 'blob' de busca uma única vez
 if busca:
     txt = busca.strip().lower()
-    mask = pd.Series(False, index=df_f.index)
-    for col in df_f.columns:
-        mask |= df_f[col].astype(str).str.lower().str.contains(txt, na=False)
-    df_f = df_f[mask]
+    text_cols = [c for c in df_f.columns if df_f[c].dtype == "string[pyarrow]" or df_f[c].dtype == object]
+    if text_cols:
+        blob = df_f[text_cols].astype(str).agg(" | ".join, axis=1).str.lower()
+        mask = blob.str.contains(txt, na=False)
+        df_f = df_f[mask]
 
-# filtro por datas (opcional)
 if habilitar_filtro_datas and date_range and "Retornar até" in df_f and len(date_range) == 2:
     ini, fim = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1]) + pd.Timedelta(days=1)
     mask_data = (df_f["Retornar até"] >= ini) & (df_f["Retornar até"] < fim)
@@ -539,7 +472,6 @@ if habilitar_filtro_datas and date_range and "Retornar até" in df_f and len(dat
 elif not inclui_sem_data and "Retornar até" in df_f:
     df_f = df_f[~df_f["Retornar até"].isna()]
 
-# ordenação
 if ordem in df_f.columns:
     secund = "Retornar até" if ("Retornar até" in df_f.columns and ordem != "Retornar até") else None
     if secund:
@@ -549,7 +481,6 @@ if ordem in df_f.columns:
 
 # ======================== HEADER & KPIs ========================
 st.title("⚒️ Controle de Reparos")
-
 k1, k2, k3, k4, k5 = st.columns(5)
 total_itens = len(df_f)
 atrasados = int(df_f["Em atraso"].sum()) if "Em atraso" in df_f else 0
@@ -614,40 +545,17 @@ with tab3:
         st.info("Nenhum snapshot encontrado ainda. Salve um snapshot para habilitar a comparação.")
     else:
         adicionados, removidos, alterados = calcular_diferencas(df, snap_antigo)
-
         c1, c2, c3 = st.columns(3)
         c1.metric("Adicionados", len(adicionados))
         c2.metric("Removidos", len(removidos))
         c3.metric("Alterações de campos", len(alterados))
 
-        st.markdown("**Adicionados**")
-        st.dataframe(adicionados, use_container_width=True, hide_index=True)
-
-        st.markdown("**Removidos**")
-        st.dataframe(removidos, use_container_width=True, hide_index=True)
-
-        st.markdown("**Alterados (por campo)**")
-        st.dataframe(alterados, use_container_width=True, hide_index=True)
-
-        # Downloads
-        st.download_button(
-            "⬇️ Baixar adicionados (CSV)",
-            adicionados.to_csv(index=False).encode("utf-8"),
-            "adicionados.csv",
-            "text/csv",
-        )
-        st.download_button(
-            "⬇️ Baixar removidos (CSV)",
-            removidos.to_csv(index=False).encode("utf-8"),
-            "removidos.csv",
-            "text/csv",
-        )
-        st.download_button(
-            "⬇️ Baixar alterados (CSV)",
-            alterados.to_csv(index=False).encode("utf-8"),
-            "alterados.csv",
-            "text/csv",
-        )
+        with st.expander("Adicionados", expanded=True):
+            st.dataframe(adicionados, use_container_width=True, hide_index=True)
+        with st.expander("Removidos", expanded=False):
+            st.dataframe(removidos, use_container_width=True, hide_index=True)
+        with st.expander("Alterados (por campo)", expanded=True):
+            st.dataframe(alterados, use_container_width=True, hide_index=True)
 
     st.markdown("---")
     colA, colB = st.columns([1,2])
